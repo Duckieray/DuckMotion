@@ -1,0 +1,8 @@
+{
+  "id": "duckmotion",
+  "name": "DuckMotion",
+  "description": "DuckMotion (Wan2.2) video workspace with setup checks and a ComfyUI bridge (Phase 1).",
+  "entry": "index.html",
+  "order": 40,
+  "backend": "backend.py"
+}

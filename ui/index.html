@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DuckMotion</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="wan-app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">W2</span>
+        <div class="brand-copy">
+          <strong>DuckMotion</strong>
+          <span>Wan2.2 Phase 1 Setup + ComfyUI Bridge</span>
+        </div>
+      </div>
+
+      <nav class="tabs" aria-label="DuckMotion plugin views">
+        <button class="tab active" data-view="setup" type="button">Setup</button>
+        <button class="tab" data-view="bridge" type="button">Bridge</button>
+        <button class="tab" data-view="jobs" type="button">Jobs</button>
+      </nav>
+
+      <div class="topbar-right">
+        <button id="refresh-all" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+        <div class="status-pill">
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Checking...</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="views">
+      <section id="view-setup" class="view active">
+        <div class="grid two-col">
+          <section class="panel">
+            <div class="panel-head">Connection + Paths</div>
+            <div class="panel-body stack">
+              <label class="label" for="comfy-url">ComfyUI URL</label>
+              <input id="comfy-url" class="input" type="text" placeholder="127.0.0.1:8188" />
+
+              <label class="label" for="models-dir">Wan GGUF Folder</label>
+              <input id="models-dir" class="input" type="text" placeholder="/path/to/wan2.2-i2v-ggufs" />
+
+              <label class="label" for="comfy-models-dir">ComfyUI Models Folder (optional)</label>
+              <input id="comfy-models-dir" class="input" type="text" placeholder="/path/to/ComfyUI/models" />
+
+              <div class="row">
+                <button id="save-config" class="btn btn-primary" type="button">Save Config</button>
+                <button id="check-health" class="btn btn-secondary" type="button">Run Checks</button>
+              </div>
+              <p class="hint">
+                Phase 1 enables setup detection and a raw ComfyUI prompt bridge. Guided Wan workflow generation arrives in Phase 2.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">Readiness</div>
+            <div class="panel-body stack">
+              <div id="readiness-badges" class="badge-grid"></div>
+              <div id="readiness-summary" class="callout muted">Loading setup state...</div>
+              <div class="subgrid">
+                <div>
+                  <h3 class="mini-title">Detected GGUF Pairs</h3>
+                  <ul id="pair-list" class="list compact"></ul>
+                </div>
+                <div>
+                  <h3 class="mini-title">Missing / Warnings</h3>
+                  <ul id="missing-list" class="list compact"></ul>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">Staging (Upload for Wan)</div>
+            <div class="panel-body stack">
+              <form id="upload-form" class="stack">
+                <input id="upload-file" class="input" type="file" accept="image/png,image/jpeg,image/webp" />
+                <div class="row">
+                  <button id="upload-btn" class="btn btn-primary" type="submit">Upload to Staging</button>
+                  <button id="refresh-staging" class="btn btn-secondary" type="button">Refresh Staging</button>
+                </div>
+              </form>
+              <div id="staging-list" class="media-list"></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">Recent WebbDuck Images</div>
+            <div class="panel-body stack">
+              <div class="row">
+                <button id="refresh-recent" class="btn btn-secondary" type="button">Refresh Recent</button>
+                <span class="hint-inline">Copy images from WebbDuck outputs into Wan staging.</span>
+              </div>
+              <div id="recent-list" class="media-list"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-bridge" class="view">
+        <div class="grid two-col">
+          <section class="panel">
+            <div class="panel-head">ComfyUI Bridge (Raw Prompt JSON)</div>
+            <div class="panel-body stack">
+              <p class="hint">
+                Advanced fallback for Phase 1: paste a ComfyUI <code>/prompt</code> JSON payload. The plugin will submit it and track the returned <code>prompt_id</code>.
+              </p>
+              <textarea id="prompt-json" class="textarea" spellcheck="false" placeholder='{"prompt": {...}}'></textarea>
+              <div class="row">
+                <button id="submit-prompt-json" class="btn btn-primary" type="button">Submit to ComfyUI</button>
+                <button id="load-example-json" class="btn btn-secondary" type="button">Load Example</button>
+              </div>
+              <pre id="bridge-result" class="json-box muted">No submissions yet.</pre>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">ComfyUI API Snapshot</div>
+            <div class="panel-body stack">
+              <div class="row">
+                <button id="refresh-comfy-queue" class="btn btn-secondary" type="button">Load Queue</button>
+                <button id="refresh-comfy-stats" class="btn btn-secondary" type="button">Load System Stats</button>
+              </div>
+              <pre id="comfy-queue-json" class="json-box muted">Queue not loaded.</pre>
+              <pre id="comfy-stats-json" class="json-box muted">System stats not loaded.</pre>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-jobs" class="view">
+        <div class="grid one-col">
+          <section class="panel">
+            <div class="panel-head">
+              <span>Tracked Bridge Jobs</span>
+              <div class="head-actions">
+                <button id="refresh-jobs" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+                <button id="clear-jobs" class="btn btn-secondary btn-sm" type="button">Clear List</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div id="jobs-list" class="jobs-list"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
