@@ -1,7 +1,7 @@
 {
   "id": "duckmotion",
   "name": "DuckMotion",
-  "description": "DuckMotion (Wan2.2) video workspace with setup checks and a ComfyUI bridge (Phase 1).",
+  "description": "DuckMotion (Wan2.2) local diffusers video workspace plugin for WebbDuck.",
   "entry": "index.html",
   "order": 40,
   "backend": "backend.py"

@@ -26,7 +26,7 @@ body {
   margin: 0;
   height: 100%;
   color: var(--text);
-  font-family: "Segoe UI", "Inter", system-ui, sans-serif;
+  font-family: "Inter", system-ui, sans-serif;
   background:
     radial-gradient(44rem 24rem at 100% 0%, rgba(95, 176, 255, 0.16), transparent 70%),
     radial-gradient(38rem 22rem at -10% 15%, rgba(32, 213, 201, 0.12), transparent 70%),
@@ -60,6 +60,8 @@ body::before {
   align-items: center;
   border: 1px solid var(--stroke-soft);
   background: linear-gradient(160deg, rgba(10, 15, 28, 0.94), rgba(12, 19, 35, 0.78));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   box-shadow: var(--shadow);
 }
 
@@ -113,6 +115,7 @@ body::before {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition: all 180ms ease;
 }
 
 .tab:hover {
@@ -205,6 +208,7 @@ body::before {
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--stroke-soft);
   font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--muted);
@@ -249,32 +253,34 @@ body::before {
 .input,
 .textarea {
   width: 100%;
+  min-height: 44px;
   color: var(--text);
   background: rgba(7, 11, 20, 0.86);
   border: 1px solid var(--stroke-soft);
   border-radius: 10px;
   padding: 10px 12px;
   font: inherit;
+  color-scheme: dark;
 }
 
 .input:focus,
 .textarea:focus {
   outline: none;
-  border-color: rgba(95, 176, 255, 0.55);
-  box-shadow: 0 0 0 2px rgba(95, 176, 255, 0.15);
+  border-color: rgba(96, 165, 250, 0.8);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
 }
 
 .textarea {
   min-height: 240px;
   resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: inherit;
+  font-size: 13px;
   line-height: 1.45;
 }
 
 .btn {
   min-height: 34px;
-  border-radius: 10px;
+  border-radius: 999px;
   border: 1px solid var(--stroke-soft);
   background: rgba(10, 15, 28, 0.8);
   color: var(--text);
@@ -282,6 +288,7 @@ body::before {
   cursor: pointer;
   font-weight: 600;
   font-size: 13px;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
 }
 
 .btn:hover {
@@ -331,6 +338,34 @@ body::before {
   color: var(--muted);
 }
 
+.advanced-block {
+  border: 1px solid var(--stroke-soft);
+  border-radius: 10px;
+  background: rgba(8, 12, 22, 0.5);
+  padding: 0;
+}
+
+.advanced-block>summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.advanced-block>summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-block[open]>summary {
+  border-bottom: 1px solid var(--stroke-soft);
+}
+
+.advanced-content {
+  padding: 10px 12px 12px;
+}
+
 .badge-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -356,6 +391,35 @@ body::before {
 .badge-value {
   font-size: 13px;
   font-weight: 700;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stat-card {
+  border-radius: 10px;
+  border: 1px solid var(--stroke-soft);
+  background: rgba(8, 13, 22, 0.66);
+  padding: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stat-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 .badge.ok .badge-value {
@@ -594,7 +658,8 @@ code {
   }
 
   .grid.two-col,
-  .subgrid {
+  .subgrid,
+  .stats-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -606,4 +671,68 @@ code {
     width: 72px;
     height: 54px;
   }
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.field-grid>div {
+  display: grid;
+  gap: 6px;
+}
+
+.select-grow {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.panel-span-2 {
+  grid-column: 1 / -1;
+}
+
+.textarea-sm {
+  min-height: 100px;
+}
+
+.textarea-md {
+  min-height: 140px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.gallery-grid .output-card video,
+.gallery-grid .output-card img {
+  max-height: 220px;
+}
+
+.error-callout {
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
+}
+
+.warn-callout {
+  border-color: rgba(245, 158, 11, 0.28);
+  color: #fde68a;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }

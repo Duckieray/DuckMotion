@@ -4,23 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DuckMotion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div id="app" class="wan-app">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark">W2</span>
+        <span class="brand-mark">DM</span>
         <div class="brand-copy">
           <strong>DuckMotion</strong>
-          <span>Wan2.2 Phase 1 Setup + ComfyUI Bridge</span>
+          <span>Wan2.2 I2V • Local diffusers runtime for WebbDuck</span>
         </div>
       </div>
 
       <nav class="tabs" aria-label="DuckMotion plugin views">
         <button class="tab active" data-view="setup" type="button">Setup</button>
-        <button class="tab" data-view="bridge" type="button">Bridge</button>
+        <button class="tab" data-view="create" type="button">Create</button>
         <button class="tab" data-view="jobs" type="button">Jobs</button>
+        <button class="tab" data-view="gallery" type="button">Gallery</button>
       </nav>
 
       <div class="topbar-right">
@@ -36,24 +40,64 @@
       <section id="view-setup" class="view active">
         <div class="grid two-col">
           <section class="panel">
-            <div class="panel-head">Connection + Paths</div>
+            <div class="panel-head">Runtime + Model</div>
             <div class="panel-body stack">
-              <label class="label" for="comfy-url">ComfyUI URL</label>
-              <input id="comfy-url" class="input" type="text" placeholder="127.0.0.1:8188" />
+              <label class="label" for="model-id-or-path">Wan Model (HF repo ID or local path)</label>
+              <input id="model-id-or-path" class="input" type="text" placeholder="Wan-AI/Wan2.2-I2V-A14B-Diffusers" />
+              <div class="row">
+                <select id="discovered-models" class="input select-grow" aria-label="Discovered local Wan models">
+                  <option value="">Scanning local Wan models…</option>
+                </select>
+                <button id="refresh-models" class="btn btn-secondary btn-sm" type="button">Refresh Models</button>
+              </div>
+              <p id="discovered-models-hint" class="hint">
+                Auto-finds models from <code>checkpoint/wan</code> and Hugging Face cache.
+              </p>
 
-              <label class="label" for="models-dir">Wan GGUF Folder</label>
-              <input id="models-dir" class="input" type="text" placeholder="/path/to/wan2.2-i2v-ggufs" />
+              <details class="advanced-block">
+                <summary>Advanced Paths</summary>
+                <div class="stack advanced-content">
+                  <label class="label" for="models-dir">Models Cache Dir (optional)</label>
+                  <input id="models-dir" class="input" type="text" placeholder="/path/to/models-cache" />
 
-              <label class="label" for="comfy-models-dir">ComfyUI Models Folder (optional)</label>
-              <input id="comfy-models-dir" class="input" type="text" placeholder="/path/to/ComfyUI/models" />
+                  <label class="label" for="output-dir">Output Dir (optional)</label>
+                  <input id="output-dir" class="input" type="text" placeholder="Uses WebbDuck outputs by default" />
+                </div>
+              </details>
+
+              <div class="field-grid">
+                <div>
+                  <label class="label" for="default-width">Default Width</label>
+                  <input id="default-width" class="input" type="number" min="256" step="16" />
+                </div>
+                <div>
+                  <label class="label" for="default-height">Default Height</label>
+                  <input id="default-height" class="input" type="number" min="256" step="16" />
+                </div>
+                <div>
+                  <label class="label" for="default-frames">Default Frames</label>
+                  <input id="default-frames" class="input" type="number" min="8" max="241" />
+                </div>
+                <div>
+                  <label class="label" for="default-fps">Default FPS</label>
+                  <input id="default-fps" class="input" type="number" min="1" max="60" />
+                </div>
+                <div>
+                  <label class="label" for="default-steps">Default Steps</label>
+                  <input id="default-steps" class="input" type="number" min="1" max="120" />
+                </div>
+                <div>
+                  <label class="label" for="default-guidance">Default Guidance</label>
+                  <input id="default-guidance" class="input" type="number" min="0" max="20" step="0.1" />
+                </div>
+              </div>
 
               <div class="row">
                 <button id="save-config" class="btn btn-primary" type="button">Save Config</button>
                 <button id="check-health" class="btn btn-secondary" type="button">Run Checks</button>
+                <button id="unload-engine" class="btn btn-secondary" type="button">Unload Model</button>
               </div>
-              <p class="hint">
-                Phase 1 enables setup detection and a raw ComfyUI prompt bridge. Guided Wan workflow generation arrives in Phase 2.
-              </p>
+              <p class="hint">Uses WebbDuck runtime/device settings automatically.</p>
             </div>
           </section>
 
@@ -61,30 +105,42 @@
             <div class="panel-head">Readiness</div>
             <div class="panel-body stack">
               <div id="readiness-badges" class="badge-grid"></div>
-              <div id="readiness-summary" class="callout muted">Loading setup state...</div>
+              <div id="readiness-summary" class="callout muted">Loading readiness...</div>
               <div class="subgrid">
-                <div>
-                  <h3 class="mini-title">Detected GGUF Pairs</h3>
-                  <ul id="pair-list" class="list compact"></ul>
-                </div>
                 <div>
                   <h3 class="mini-title">Missing / Warnings</h3>
                   <ul id="missing-list" class="list compact"></ul>
+                </div>
+                <div>
+                  <h3 class="mini-title">Runtime Profile (WebbDuck)</h3>
+                  <div id="runtime-summary" class="stats-grid"></div>
                 </div>
               </div>
             </div>
           </section>
 
           <section class="panel">
-            <div class="panel-head">Staging (Upload for Wan)</div>
+            <div class="panel-head">Engine Status</div>
+            <div class="panel-body stack">
+              <div id="engine-summary" class="stats-grid"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-create" class="view">
+        <div class="grid two-col">
+          <section class="panel">
+            <div class="panel-head">Staging</div>
             <div class="panel-body stack">
               <form id="upload-form" class="stack">
                 <input id="upload-file" class="input" type="file" accept="image/png,image/jpeg,image/webp" />
                 <div class="row">
-                  <button id="upload-btn" class="btn btn-primary" type="submit">Upload to Staging</button>
-                  <button id="refresh-staging" class="btn btn-secondary" type="button">Refresh Staging</button>
+                  <button id="upload-btn" class="btn btn-primary" type="submit">Upload</button>
+                  <button id="refresh-staging" class="btn btn-secondary" type="button">Refresh</button>
                 </div>
               </form>
+              <div id="selected-source" class="callout muted">No source image selected.</div>
               <div id="staging-list" class="media-list"></div>
             </div>
           </section>
@@ -94,40 +150,80 @@
             <div class="panel-body stack">
               <div class="row">
                 <button id="refresh-recent" class="btn btn-secondary" type="button">Refresh Recent</button>
-                <span class="hint-inline">Copy images from WebbDuck outputs into Wan staging.</span>
+                <span class="hint-inline">Copy an image into DuckMotion staging, then generate.</span>
               </div>
               <div id="recent-list" class="media-list"></div>
             </div>
           </section>
-        </div>
-      </section>
 
-      <section id="view-bridge" class="view">
-        <div class="grid two-col">
-          <section class="panel">
-            <div class="panel-head">ComfyUI Bridge (Raw Prompt JSON)</div>
+          <section class="panel panel-span-2">
+            <div class="panel-head">Generate Wan2.2 I2V</div>
             <div class="panel-body stack">
-              <p class="hint">
-                Advanced fallback for Phase 1: paste a ComfyUI <code>/prompt</code> JSON payload. The plugin will submit it and track the returned <code>prompt_id</code>.
-              </p>
-              <textarea id="prompt-json" class="textarea" spellcheck="false" placeholder='{"prompt": {...}}'></textarea>
-              <div class="row">
-                <button id="submit-prompt-json" class="btn btn-primary" type="button">Submit to ComfyUI</button>
-                <button id="load-example-json" class="btn btn-secondary" type="button">Load Example</button>
-              </div>
-              <pre id="bridge-result" class="json-box muted">No submissions yet.</pre>
-            </div>
-          </section>
+              <label class="label" for="prompt">Prompt</label>
+              <textarea id="prompt" class="textarea textarea-md" spellcheck="false" placeholder="Describe the motion you want from the source image..."></textarea>
 
-          <section class="panel">
-            <div class="panel-head">ComfyUI API Snapshot</div>
-            <div class="panel-body stack">
-              <div class="row">
-                <button id="refresh-comfy-queue" class="btn btn-secondary" type="button">Load Queue</button>
-                <button id="refresh-comfy-stats" class="btn btn-secondary" type="button">Load System Stats</button>
+              <label class="label" for="negative-prompt">Negative Prompt (optional)</label>
+              <textarea id="negative-prompt" class="textarea textarea-sm" spellcheck="false" placeholder="blurry, artifacts, low quality"></textarea>
+
+              <div class="field-grid">
+                <div>
+                  <label class="label" for="preset-seconds">Target Seconds</label>
+                  <input id="preset-seconds" class="input" type="number" min="1" max="30" step="1" value="3" />
+                </div>
+                <div>
+                  <label class="label" for="preset-quality">Quality</label>
+                  <select id="preset-quality" class="input">
+                    <option value="preview">Preview</option>
+                    <option value="balanced" selected>Balanced</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label">Preset Helper</label>
+                  <button id="apply-generate-preset" class="btn btn-secondary" type="button">Apply Preset</button>
+                </div>
               </div>
-              <pre id="comfy-queue-json" class="json-box muted">Queue not loaded.</pre>
-              <pre id="comfy-stats-json" class="json-box muted">System stats not loaded.</pre>
+              <div id="preset-summary" class="hint-inline">Preset helper fills recommended video settings; you can still override them manually.</div>
+
+              <details class="advanced-block">
+                <summary>Advanced Generation Settings</summary>
+                <div class="field-grid advanced-content">
+                  <div>
+                    <label class="label" for="gen-width">Width</label>
+                    <input id="gen-width" class="input" type="number" min="256" step="16" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-height">Height</label>
+                    <input id="gen-height" class="input" type="number" min="256" step="16" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-frames">Frames</label>
+                    <input id="gen-frames" class="input" type="number" min="8" max="241" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-fps">FPS</label>
+                    <input id="gen-fps" class="input" type="number" min="1" max="60" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-steps">Steps</label>
+                    <input id="gen-steps" class="input" type="number" min="1" max="120" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-guidance">Guidance</label>
+                    <input id="gen-guidance" class="input" type="number" min="0" max="20" step="0.1" />
+                  </div>
+                  <div>
+                    <label class="label" for="gen-seed">Seed (optional)</label>
+                    <input id="gen-seed" class="input" type="number" step="1" />
+                  </div>
+                </div>
+              </details>
+
+              <div class="row">
+                <button id="submit-generate" class="btn btn-primary" type="button">Queue Video Job</button>
+                <button id="fill-defaults" class="btn btn-secondary" type="button">Load Defaults</button>
+              </div>
+              <div id="generate-feedback" class="callout muted">No job submitted yet.</div>
             </div>
           </section>
         </div>
@@ -137,7 +233,7 @@
         <div class="grid one-col">
           <section class="panel">
             <div class="panel-head">
-              <span>Tracked Bridge Jobs</span>
+              <span>DuckMotion Jobs</span>
               <div class="head-actions">
                 <button id="refresh-jobs" class="btn btn-secondary btn-sm" type="button">Refresh</button>
                 <button id="clear-jobs" class="btn btn-secondary btn-sm" type="button">Clear List</button>
@@ -145,6 +241,22 @@
             </div>
             <div class="panel-body">
               <div id="jobs-list" class="jobs-list"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-gallery" class="view">
+        <div class="grid one-col">
+          <section class="panel">
+            <div class="panel-head">
+              <span>DuckMotion Gallery</span>
+              <div class="head-actions">
+                <button id="refresh-gallery" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div id="gallery-list" class="gallery-grid"></div>
             </div>
           </section>
         </div>
