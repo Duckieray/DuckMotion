@@ -37,7 +37,16 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 _WEBBDUCK_ROOT: str | None = None
-for _parent in list(Path(__file__).resolve().parents) + [Path.cwd().resolve()]:
+_candidates: list[Path] = list(Path(__file__).resolve().parents)
+_candidates.append(Path.cwd().resolve())
+for _p in sys.path:
+    try:
+        _path = Path(_p).resolve() if _p else Path.cwd().resolve()
+        if _path not in _candidates:
+            _candidates.append(_path)
+    except Exception:
+        pass
+for _parent in _candidates:
     if (_parent / "server" / "app.py").exists():
         _WEBBDUCK_ROOT = str(_parent)
         break
@@ -48,8 +57,14 @@ from server.storage import BASE, resolve_web_path, to_web_path
 
 try:
     from core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, release_gpu_lease
-except (ImportError, ModuleNotFoundError):
+except (ImportError, ModuleNotFoundError) as _exc:
+    _LOG.error(
+        "DuckMotion cannot find core.gpu_lease — ensure WebbDuck repo root "
+        "is on sys.path or set WEBBDUCK_PLUGINS_DIR to the correct location. "
+        "GPU lease coordination is disabled. Import error: %s", _exc
+    )
     def acquire_gpu_lease_blocking(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        _LOG.warning("gpu_lease stub: acquire_gpu_lease_blocking called (no real lease)")
         return {"lease": None}
     def get_gpu_lease() -> dict[str, Any]:
         return {"held": False}
