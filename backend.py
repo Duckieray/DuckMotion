@@ -36,20 +36,25 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+_WEBBDUCK_ROOT: str | None = None
+for _parent in list(Path(__file__).resolve().parents) + [Path.cwd().resolve()]:
+    if (_parent / "server" / "app.py").exists():
+        _WEBBDUCK_ROOT = str(_parent)
+        break
+if _WEBBDUCK_ROOT is not None and _WEBBDUCK_ROOT not in sys.path:
+    sys.path.insert(0, _WEBBDUCK_ROOT)
+
+from server.storage import BASE, resolve_web_path, to_web_path
+
 try:
-    from webbduck.server.storage import BASE, resolve_web_path, to_web_path
-    from webbduck.core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, release_gpu_lease
-except ModuleNotFoundError:
-    # Child-process invocation executes this file directly; ensure repo root is importable.
-    _parents = Path(__file__).resolve().parents
-    _repo_root = _parents[3] if len(_parents) > 3 else Path.cwd().resolve()
-    _candidates = [_repo_root.parent, _repo_root]
-    for _candidate in _candidates:
-        _value = str(_candidate)
-        if _value not in sys.path:
-            sys.path.insert(0, _value)
-    from webbduck.server.storage import BASE, resolve_web_path, to_web_path
-    from webbduck.core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, release_gpu_lease
+    from core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, release_gpu_lease
+except (ImportError, ModuleNotFoundError):
+    def acquire_gpu_lease_blocking(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"lease": None}
+    def get_gpu_lease() -> dict[str, Any]:
+        return {"held": False}
+    def release_gpu_lease(*args: Any, **kwargs: Any) -> None:
+        pass
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path.home() / ".webbduck" / "plugin_state"
@@ -86,7 +91,7 @@ def _webbduck_path_hints() -> dict[str, Path | None]:
     }
     hints["checkpoint_wan_candidates"] = []  # type: ignore[index]
     try:
-        from webbduck.models import registry as model_registry  # lazy import
+        from models import registry as model_registry  # lazy import
 
         root = Path(getattr(model_registry, "ROOT", "")).resolve() if getattr(model_registry, "ROOT", None) else None
         models_root = (
@@ -1231,10 +1236,10 @@ def _engine_status(config: dict[str, Any], runtime: dict[str, Any]) -> dict[str,
 
 def _get_runtime_profile_safe() -> dict[str, Any]:
     try:
-        from webbduck.core.runtime import resolve_runtime_profile  # lazy import
+        from core.runtime import resolve_runtime_profile  # lazy import
 
         profile = resolve_runtime_profile()
-        return {"ok": True, "profile": profile.to_dict(), "source": "webbduck.core.runtime.resolve_runtime_profile"}
+        return {"ok": True, "profile": profile.to_dict(), "source": "core.runtime.resolve_runtime_profile"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1551,7 +1556,7 @@ def _run_job(job_id: str) -> None:
             )
         _LOG.exception("DuckMotion job %s failed", job_id)
         try:
-            from webbduck.core.runtime import runtime_error_hint  # type: ignore
+            from core.runtime import runtime_error_hint  # type: ignore
 
             hint = runtime_error_hint(exc)
         except Exception:
@@ -2635,13 +2640,13 @@ def _get_webbduck_cleanup_hooks() -> tuple[Any | None, Any | None]:
     pipeline_manager = None
     unload_captioners = None
     try:
-        from webbduck.core.pipeline import pipeline_manager as imported_pipeline_manager  # type: ignore
+        from core.pipeline import pipeline_manager as imported_pipeline_manager  # type: ignore
 
         pipeline_manager = imported_pipeline_manager
     except Exception:
         pipeline_manager = None
     try:
-        from webbduck.core.captioner import unload_captioners as imported_unload_captioners  # type: ignore
+        from core.captioner import unload_captioners as imported_unload_captioners  # type: ignore
 
         unload_captioners = imported_unload_captioners
     except Exception:
