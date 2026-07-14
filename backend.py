@@ -2607,7 +2607,7 @@ def _recent_webbduck_images(limit: int = 24) -> list[dict[str, Any]]:
         for img in sorted(run.iterdir(), key=lambda p: p.name):
             if not img.is_file() or img.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
                 continue
-            if img.name.endswith("_upscaled.png"):
+            if img.name.endswith("_upscaled.png") or ".thumb" in img.name:
                 continue
             out.append(
                 {
