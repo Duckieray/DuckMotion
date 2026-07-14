@@ -1938,6 +1938,23 @@ def _normalize_frames_to_pil(frames: list[Any]) -> list[Any]:
     return [_normalize_frame_to_pil(frame) for frame in frames]
 
 
+def _gguf_path_pair(path: str) -> str:
+    """Derive the L-pair path from an H-pair GGUF path (e.g. ...Q8H.gguf → ...Q8L.gguf)."""
+    p = _normalize_path_string(path)
+    if not p:
+        return ""
+    name = Path(p).name
+    if "H" not in name:
+        return ""
+    l_name = name.replace("H", "L")
+    if l_name == name:
+        return ""
+    l_path = str(Path(p).parent / l_name)
+    if Path(l_path).exists():
+        return l_path
+    return ""
+
+
 def _load_gguf_pipeline(
     model_source: str,
     gguf_transformer_path: str,
@@ -2004,16 +2021,32 @@ def _load_gguf_pipeline(
             f"DuckMotion failed to load quantized transformer from {gguf_transformer_path}: {exc}"
         ) from exc
 
-    _LOG.info("DuckMotion quantized transformer loaded; assembling pipeline from base repo.")
-
     # For GGUF/safetensors pipelines, use the HF repo ID as the base source since
     # the single-file transformer does not include pipeline components (VAE, text encoders, etc.).
     pipe_base_source = model_source if model_source_exists else DEFAULT_MODEL_ID
+
+    # Load the second (pair) transformer from GGUF if an L-file exists alongside the H-file.
+    # Without this, from_pretrained would try to download transformer_2 from HF (~58GB).
+    transformer_2_path = (
+        gguf_pair_paths.get("L") or _gguf_path_pair(gguf_transformer_path)
+    )
+    if transformer_2_path:
+        _LOG.info("DuckMotion loading pair transformer (L) from %s", transformer_2_path)
+        try:
+            transformer_2 = WanTransformer3DModel.from_single_file(transformer_2_path, **load_kwargs)
+        except Exception as exc:
+            _LOG.warning("DuckMotion failed to load pair transformer (L) from %s: %s", transformer_2_path, exc)
+            transformer_2 = None
+    else:
+        transformer_2 = None
+
     pipe_kwargs: dict[str, Any] = {
         "transformer": transformer,
         "torch_dtype": dtype,
         "low_cpu_mem_usage": True,
     }
+    if transformer_2 is not None:
+        pipe_kwargs["transformer_2"] = transformer_2
     if device == "cuda" and use_device_map_cuda:
         pipe_kwargs["device_map"] = "cuda"
     if cache_dir and not model_source_exists:
@@ -2021,6 +2054,7 @@ def _load_gguf_pipeline(
     if model_source_exists:
         pipe_kwargs["local_files_only"] = True
 
+    _LOG.info("DuckMotion quantized transformer loaded; assembling pipeline from base repo.")
     try:
         _write_progress_file(progress_path, "assembling_pipeline", 40)
         pipe = WanImageToVideoPipeline.from_pretrained(pipe_base_source, **pipe_kwargs)
