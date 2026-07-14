@@ -2413,9 +2413,13 @@ def _unload_pipeline() -> None:
     try:
         import torch  # type: ignore
 
+        if hasattr(pipe, "to"):
+            pipe = pipe.to("cpu")
         del pipe
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
     except Exception:
         pass
 
@@ -2812,6 +2816,9 @@ def _prepare_runtime_for_wan(runtime_profile: dict[str, Any]) -> None:
             pipeline_unloaded = True
         except Exception:
             _LOG.exception("DuckMotion failed to unload WebbDuck pipelines before Wan load.")
+
+    # Also unload DuckMotion's own pipeline so GPU memory is definitely free.
+    _unload_pipeline()
 
     if callable(unload_captioners):
         try:
