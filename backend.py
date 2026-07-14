@@ -2304,13 +2304,6 @@ def _get_or_load_pipeline(config: dict[str, Any], runtime_profile: dict[str, Any
                 )
 
             pipe = _build_gguf_pipe(use_device_map_cuda=(device == "cuda"))
-        else:
-            pipe = _load_pipeline(low_mem=(device != "cuda" or cuda_mode != "full"))
-
-        _write_progress_file(progress_path, "pipeline_loaded", 50)
-
-        if device == "cuda":
-            placed = False
             if cuda_mode != "full":
                 try:
                     if getattr(pipe, "hf_device_map", None):
