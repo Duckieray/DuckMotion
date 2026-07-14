@@ -1955,19 +1955,21 @@ def _gguf_path_pair(path: str) -> str:
     return ""
 
 
-def _precache_pipeline_components(repo_id: str, local_base: str) -> None:
-    """Download non-transformer component weight files into a local folder.
+def _precache_pipeline_components(repo_id: str) -> str | None:
+    """Download non-transformer component weight files via ``hf_hub_download``.
 
-    Builds a complete local snapshot so ``from_pretrained(local_base,
-    local_files_only=True)`` can load without triggering ``snapshot_download``
-    or downloading the entire repo (including 58 GB transformer shards).
+    Files land in the HF hub cache naturally (``{hub_cache}/models--org--repo/
+    snapshots/{revision}/…``).  Returns the snapshot directory path so the caller
+    can pass it to ``from_pretrained(snapshot_root, local_files_only=True)``
+    without needing ``snapshot_download``.
+
+    Returns ``None`` if the import or the first file download fails.
     """
     try:
         from huggingface_hub import hf_hub_download
     except Exception:
-        return
+        return None
 
-    local_base_path = Path(local_base)
     _WAN_REQUIRED_FILES: list[str] = [
         "model_index.json",
         "scheduler/scheduler_config.json",
@@ -1985,29 +1987,25 @@ def _precache_pipeline_components(repo_id: str, local_base: str) -> None:
         "transformer/config.json",
         "transformer_2/config.json",
     ]
+    snapshot_root: str | None = None
     errors = 0
     for filename in _WAN_REQUIRED_FILES:
-        dest = local_base_path / filename
-        if dest.exists() and dest.is_file() and dest.stat().st_size > 0:
-            _LOG.info("Already cached: %s", filename)
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             _LOG.info("Downloading %s/%s …", repo_id, filename)
             cached = hf_hub_download(repo_id, filename)
-            src = Path(cached)
-            # Remove any stale entry (broken symlink etc.) before re-creating
-            dest.unlink(missing_ok=True)
-            if src.is_symlink():
-                src = src.resolve()
-            dest.symlink_to(src)
-            _LOG.info("  → %s (%d bytes)", filename, dest.stat().st_size)
+            if snapshot_root is None:
+                # model_index.json is always at the snapshot root
+                snapshot_root = str(Path(cached).parent)
+            _LOG.info("  ✓ %s", filename)
         except Exception as exc:
             _LOG.warning("Download failed for %s/%s: %s", repo_id, filename, exc)
+            if snapshot_root is None:
+                return None
             errors += 1
 
     if errors:
         _LOG.warning("%d file(s) failed to download; pipeline assembly may fail.", errors)
+    return snapshot_root
 
 
 def _load_gguf_pipeline(
@@ -2108,24 +2106,22 @@ def _load_gguf_pipeline(
     if device == "cuda" and use_device_map_cuda:
         pipe_kwargs["device_map"] = "cuda"
 
-    # Build a local snapshot directory with only the files the pipeline
-    # actually needs (no 58 GB transformer shards).  Then use
-    # local_files_only=True to skip snapshot_download entirely.
-    local_snapshot: str | None = None
+    # Download non-transformer components via hf_hub_download into the HF hub
+    # cache and use the snapshot directory directly, avoiding snapshot_download.
+    snapshot_root: str | None = None
     if cache_dir:
-        local_snapshot = str(Path(cache_dir).expanduser() / "wan-snapshot")
         _write_progress_file(progress_path, "caching_components", 40)
-        _LOG.info("DuckMotion caching non-transformer components to %s …", local_snapshot)
-        _precache_pipeline_components(pipe_base_source, local_snapshot)
-
-    snapshot_ok = local_snapshot and (Path(local_snapshot) / "model_index.json").exists()
-    if snapshot_ok:
-        pipe_kwargs["local_files_only"] = True
-        effective_base = local_snapshot
+        _LOG.info("DuckMotion caching non-transformer components from %s …", pipe_base_source)
+        snapshot_root = _precache_pipeline_components(pipe_base_source)
+        if snapshot_root and (Path(snapshot_root) / "model_index.json").exists():
+            pipe_kwargs["local_files_only"] = True
+            effective_base = snapshot_root
+        else:
+            _LOG.info("DuckMotion snapshot incomplete; falling back to hub.")
+            pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser()) if cache_dir else None
+            effective_base = pipe_base_source
     else:
-        if local_snapshot:
-            _LOG.info("DuckMotion local snapshot unavailable (missing model_index.json); falling back to hub.")
-        pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser()) if cache_dir else None
+        pipe_kwargs["cache_dir"] = None
         effective_base = pipe_base_source
 
     _LOG.info("DuckMotion assembling pipeline from %s.", effective_base)
