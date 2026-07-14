@@ -1955,6 +1955,46 @@ def _gguf_path_pair(path: str) -> str:
     return ""
 
 
+def _precache_pipeline_components(repo_id: str, cache_dir: str) -> None:
+    """Pre-download non-transformer component weight files into the HF cache.
+
+    Individual ``hf_hub_download`` calls are more reliable than letting
+    ``from_pretrained`` invoke ``snapshot_download``, which can hang on large
+    repos.  Only targets the files that the Wan pipeline actually needs at
+    load time (VAE + text encoder weights).
+    """
+    try:
+        from huggingface_hub import hf_hub_download  # type: ignore
+    except Exception:
+        return  # fail open if hf_hub is somehow unavailable
+    _cache_dir = str(Path(cache_dir).expanduser())
+    # Files to pre-cache.  Configs and small files are typically fast to
+    # download; weight shards are the important ones.
+    _WAN_PRECACHE_FILES: list[str] = [
+        "vae/diffusion_pytorch_model.safetensors",
+        "text_encoder/model.safetensors.index.json",
+        "text_encoder/model-00001-of-00003.safetensors",
+        "text_encoder/model-00002-of-00003.safetensors",
+        "text_encoder/model-00003-of-00003.safetensors",
+    ]
+    for filename in _WAN_PRECACHE_FILES:
+        try:
+            _LOG.info("Pre-caching %s/%s", repo_id, filename)
+            hf_hub_download(
+                repo_id,
+                filename,
+                cache_dir=_cache_dir,
+                resume=True,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "Pre-cache failed for %s/%s (will be fetched during pipeline assembly): %s",
+                repo_id,
+                filename,
+                exc,
+            )
+
+
 def _load_gguf_pipeline(
     model_source: str,
     gguf_transformer_path: str,
@@ -2054,9 +2094,18 @@ def _load_gguf_pipeline(
     if model_source_exists:
         pipe_kwargs["local_files_only"] = True
 
-    _LOG.info("DuckMotion quantized transformer loaded; assembling pipeline from base repo.")
+    _LOG.info("DuckMotion quantized transformer loaded; ensuring remaining components are cached.")
+
+    # Pre-download required weight files that from_pretrained would otherwise
+    # fetch via snapshot_download (which can hang on large repos).  Individual
+    # hf_hub_download calls are more reliable.
+    if not model_source_exists and cache_dir:
+        _write_progress_file(progress_path, "caching_components", 40)
+        _precache_pipeline_components(pipe_base_source, cache_dir)
+
+    _LOG.info("DuckMotion assembling pipeline from base repo.")
     try:
-        _write_progress_file(progress_path, "assembling_pipeline", 40)
+        _write_progress_file(progress_path, "assembling_pipeline", 45)
         pipe = WanImageToVideoPipeline.from_pretrained(pipe_base_source, **pipe_kwargs)
     except Exception as exc:
         raise RuntimeError(
