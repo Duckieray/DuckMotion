@@ -3196,6 +3196,21 @@ def _evaluate_job_safety(params: dict[str, Any], config: dict[str, Any], runtime
             if memory_strategy.get("effective_policy") == "aggressive" and pressure["pressure_score"] >= 1.5:
                 reasons.append("Even the aggressive low-memory strategy predicts elevated crash risk for this request.")
 
+    # Linux safety checks — same principle: prevent OOM crashes instead of
+    # letting the GPU driver or OOM-killer kill the process.
+    if os.name != "nt" and device == "cuda":
+        if not using_gguf_backend and isinstance(total_vram_gb, (int, float)) and float(total_vram_gb) <= 16.0:
+            if pressure["pressure_score"] >= 0.75:
+                reasons.append("Non-quantized Wan on ≤16 GB VRAM is high risk on this Linux system.")
+        if memory_strategy.get("cuda_mode") == "full" and isinstance(total_vram_gb, (int, float)) and float(total_vram_gb) <= 16.0:
+            reasons.append("Full CUDA mode is unsafe on ≤16 GB VRAM; switch to CPU offload (default).")
+        if isinstance(avail_phys_gb, (int, float)) and float(avail_phys_gb) < 4.0:
+            reasons.append(f"Only {avail_phys_gb:.1f} GB system RAM available; Wan needs more.")
+        if isinstance(avail_phys_gb, (int, float)) and float(avail_phys_gb) < 8.0 and pressure["pressure_score"] >= 0.9:
+            reasons.append("Low system RAM combined with high job pressure risks OOM crash.")
+        if pressure["pressure_score"] >= 2.0:
+            reasons.append(f"Job pressure score {pressure['pressure_score']} is very high; try 576×320, 49 frames, 20 steps.")
+
     blocked = bool(reasons) and safety_mode == "block"
     result = {
         "ok": not blocked,
