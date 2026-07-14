@@ -1955,7 +1955,7 @@ def _gguf_path_pair(path: str) -> str:
     return ""
 
 
-def _precache_pipeline_components(repo_id: str) -> str | None:
+def _precache_pipeline_components(repo_id: str, cache_dir: str | None = None) -> str | None:
     """Download non-transformer component weight files via ``hf_hub_download``.
 
     Files land in the HF hub cache naturally (``{hub_cache}/models--org--repo/
@@ -1987,12 +1987,18 @@ def _precache_pipeline_components(repo_id: str) -> str | None:
         "transformer/config.json",
         "transformer_2/config.json",
     ]
+    # Explicit cache_dir so hf_hub_download doesn't silently fall back to
+    # ~/.cache/huggingface/hub/ when env vars are not propagated.
+    dl_kwargs: dict[str, Any] = {}
+    if cache_dir:
+        dl_kwargs["cache_dir"] = cache_dir
+
     snapshot_root: str | None = None
     errors = 0
     for filename in _WAN_REQUIRED_FILES:
         try:
             _LOG.info("Downloading %s/%s …", repo_id, filename)
-            cached = hf_hub_download(repo_id, filename)
+            cached = hf_hub_download(repo_id, filename, **dl_kwargs)
             if snapshot_root is None:
                 # model_index.json is always at the snapshot root
                 snapshot_root = str(Path(cached).parent)
@@ -2109,19 +2115,20 @@ def _load_gguf_pipeline(
     # Download non-transformer components via hf_hub_download into the HF hub
     # cache and use the snapshot directory directly, avoiding snapshot_download.
     snapshot_root: str | None = None
-    if cache_dir:
+    resolved_cache = str(Path(cache_dir).expanduser()) if cache_dir else None
+    if resolved_cache:
         _write_progress_file(progress_path, "caching_components", 40)
         _LOG.info("DuckMotion caching non-transformer components from %s …", pipe_base_source)
-        snapshot_root = _precache_pipeline_components(pipe_base_source)
+        snapshot_root = _precache_pipeline_components(pipe_base_source, cache_dir=resolved_cache)
         if snapshot_root and (Path(snapshot_root) / "model_index.json").exists():
             pipe_kwargs["local_files_only"] = True
             effective_base = snapshot_root
         else:
-            _LOG.info("DuckMotion snapshot incomplete; falling back to hub.")
-            pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser()) if cache_dir else None
-            effective_base = pipe_base_source
+            raise RuntimeError(
+                f"DuckMotion snapshot incomplete for '{pipe_base_source}'; "
+                "check logs for download failures"
+            )
     else:
-        pipe_kwargs["cache_dir"] = None
         effective_base = pipe_base_source
 
     _LOG.info("DuckMotion assembling pipeline from %s.", effective_base)
