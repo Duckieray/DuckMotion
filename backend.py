@@ -1994,7 +1994,7 @@ def _precache_pipeline_components(repo_id: str, local_base: str) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             _LOG.info("Downloading %s/%s …", repo_id, filename)
-            cached = hf_hub_download(repo_id, filename, resume=True)
+            cached = hf_hub_download(repo_id, filename)
             src = Path(cached)
             # Remove any stale entry (broken symlink etc.) before re-creating
             dest.unlink(missing_ok=True)
