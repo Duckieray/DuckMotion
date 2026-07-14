@@ -1995,13 +1995,13 @@ def _precache_pipeline_components(repo_id: str, local_base: str) -> None:
         try:
             _LOG.info("Downloading %s/%s …", repo_id, filename)
             cached = hf_hub_download(repo_id, filename, resume=True)
-            # Symlink or copy into local_base
             src = Path(cached)
-            if not dest.exists():
-                if src.is_symlink():
-                    src = src.resolve()
-                dest.symlink_to(src)
-            _LOG.info("  → %s (%d bytes)", filename, dest.stat().st_size if dest.exists() else 0)
+            # Remove any stale entry (broken symlink etc.) before re-creating
+            dest.unlink(missing_ok=True)
+            if src.is_symlink():
+                src = src.resolve()
+            dest.symlink_to(src)
+            _LOG.info("  → %s (%d bytes)", filename, dest.stat().st_size)
         except Exception as exc:
             _LOG.warning("Download failed for %s/%s: %s", repo_id, filename, exc)
             errors += 1
@@ -2118,10 +2118,13 @@ def _load_gguf_pipeline(
         _LOG.info("DuckMotion caching non-transformer components to %s …", local_snapshot)
         _precache_pipeline_components(pipe_base_source, local_snapshot)
 
-    if local_snapshot and Path(local_snapshot).exists():
+    snapshot_ok = local_snapshot and (Path(local_snapshot) / "model_index.json").exists()
+    if snapshot_ok:
         pipe_kwargs["local_files_only"] = True
         effective_base = local_snapshot
     else:
+        if local_snapshot:
+            _LOG.info("DuckMotion local snapshot unavailable (missing model_index.json); falling back to hub.")
         pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser()) if cache_dir else None
         effective_base = pipe_base_source
 
