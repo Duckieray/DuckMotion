@@ -2061,9 +2061,12 @@ def _load_gguf_pipeline(
             f"DuckMotion failed to load quantized transformer from {gguf_transformer_path}: {exc}"
         ) from exc
 
-    # For GGUF/safetensors pipelines, use the HF repo ID as the base source since
-    # the single-file transformer does not include pipeline components (VAE, text encoders, etc.).
-    pipe_base_source = model_source if model_source_exists else DEFAULT_MODEL_ID
+    # For GGUF/safetensors pipelines, always use the HF repo ID as the base
+    # source since the single-file GGUF transformer and its pair do not include
+    # pipeline components (VAE, text encoders, tokenizer, scheduler).  A local
+    # snapshot path resolved by _resolve_local_diffusers_source may be
+    # incomplete and mislead from_pretrained into skipping needed downloads.
+    pipe_base_source = DEFAULT_MODEL_ID
 
     # Load the second (pair) transformer from GGUF if an L-file exists alongside the H-file.
     # Without this, from_pretrained would try to download transformer_2 from HF (~58GB).
@@ -2089,10 +2092,14 @@ def _load_gguf_pipeline(
         pipe_kwargs["transformer_2"] = transformer_2
     if device == "cuda" and use_device_map_cuda:
         pipe_kwargs["device_map"] = "cuda"
-    if cache_dir and not model_source_exists:
+    # Always set cache_dir so hf_hub can find/place downloads.
+    if cache_dir:
         pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser())
-    if model_source_exists:
-        pipe_kwargs["local_files_only"] = True
+    # NEVER set local_files_only for the GGUF path — the non-transformer
+    # components (VAE, text_encoder, etc.) are always fetched from the HF hub
+    # and the partial local cache may not be complete.
+    # If model_source_exists and selected_backend == "diffusers_gguf":
+    #     pipe_kwargs["local_files_only"] = True  # deliberately omitted
 
     _LOG.info("DuckMotion quantized transformer loaded; ensuring remaining components are cached.")
 
