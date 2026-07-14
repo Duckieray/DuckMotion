@@ -1955,44 +1955,59 @@ def _gguf_path_pair(path: str) -> str:
     return ""
 
 
-def _precache_pipeline_components(repo_id: str, cache_dir: str) -> None:
-    """Pre-download non-transformer component weight files into the HF cache.
+def _precache_pipeline_components(repo_id: str, local_base: str) -> None:
+    """Download non-transformer component weight files into a local folder.
 
-    Individual ``hf_hub_download`` calls are more reliable than letting
-    ``from_pretrained`` invoke ``snapshot_download``, which can hang on large
-    repos.  Only targets the files that the Wan pipeline actually needs at
-    load time (VAE + text encoder weights).
+    Builds a complete local snapshot so ``from_pretrained(local_base,
+    local_files_only=True)`` can load without triggering ``snapshot_download``
+    or downloading the entire repo (including 58 GB transformer shards).
     """
     try:
-        from huggingface_hub import hf_hub_download  # type: ignore
+        from huggingface_hub import hf_hub_download
     except Exception:
-        return  # fail open if hf_hub is somehow unavailable
-    _cache_dir = str(Path(cache_dir).expanduser())
-    # Files to pre-cache.  Configs and small files are typically fast to
-    # download; weight shards are the important ones.
-    _WAN_PRECACHE_FILES: list[str] = [
-        "vae/diffusion_pytorch_model.safetensors",
+        return
+
+    local_base_path = Path(local_base)
+    _WAN_REQUIRED_FILES: list[str] = [
+        "model_index.json",
+        "scheduler/scheduler_config.json",
+        "text_encoder/config.json",
         "text_encoder/model.safetensors.index.json",
         "text_encoder/model-00001-of-00003.safetensors",
         "text_encoder/model-00002-of-00003.safetensors",
         "text_encoder/model-00003-of-00003.safetensors",
+        "tokenizer/special_tokens_map.json",
+        "tokenizer/spiece.model",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "vae/config.json",
+        "vae/diffusion_pytorch_model.safetensors",
+        "transformer/config.json",
+        "transformer_2/config.json",
     ]
-    for filename in _WAN_PRECACHE_FILES:
+    errors = 0
+    for filename in _WAN_REQUIRED_FILES:
+        dest = local_base_path / filename
+        if dest.exists() and dest.is_file() and dest.stat().st_size > 0:
+            _LOG.info("Already cached: %s", filename)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
-            _LOG.info("Pre-caching %s/%s", repo_id, filename)
-            hf_hub_download(
-                repo_id,
-                filename,
-                cache_dir=_cache_dir,
-                resume=True,
-            )
+            _LOG.info("Downloading %s/%s …", repo_id, filename)
+            cached = hf_hub_download(repo_id, filename, resume=True)
+            # Symlink or copy into local_base
+            src = Path(cached)
+            if not dest.exists():
+                if src.is_symlink():
+                    src = src.resolve()
+                dest.symlink_to(src)
+            _LOG.info("  → %s (%d bytes)", filename, dest.stat().st_size if dest.exists() else 0)
         except Exception as exc:
-            _LOG.warning(
-                "Pre-cache failed for %s/%s (will be fetched during pipeline assembly): %s",
-                repo_id,
-                filename,
-                exc,
-            )
+            _LOG.warning("Download failed for %s/%s: %s", repo_id, filename, exc)
+            errors += 1
+
+    if errors:
+        _LOG.warning("%d file(s) failed to download; pipeline assembly may fail.", errors)
 
 
 def _load_gguf_pipeline(
@@ -2092,28 +2107,28 @@ def _load_gguf_pipeline(
         pipe_kwargs["transformer_2"] = transformer_2
     if device == "cuda" and use_device_map_cuda:
         pipe_kwargs["device_map"] = "cuda"
-    # Always set cache_dir so hf_hub can find/place downloads.
+
+    # Build a local snapshot directory with only the files the pipeline
+    # actually needs (no 58 GB transformer shards).  Then use
+    # local_files_only=True to skip snapshot_download entirely.
+    local_snapshot: str | None = None
     if cache_dir:
-        pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser())
-    # NEVER set local_files_only for the GGUF path — the non-transformer
-    # components (VAE, text_encoder, etc.) are always fetched from the HF hub
-    # and the partial local cache may not be complete.
-    # If model_source_exists and selected_backend == "diffusers_gguf":
-    #     pipe_kwargs["local_files_only"] = True  # deliberately omitted
-
-    _LOG.info("DuckMotion quantized transformer loaded; ensuring remaining components are cached.")
-
-    # Pre-download required weight files that from_pretrained would otherwise
-    # fetch via snapshot_download (which can hang on large repos).  Individual
-    # hf_hub_download calls are more reliable.
-    if not model_source_exists and cache_dir:
+        local_snapshot = str(Path(cache_dir).expanduser() / "wan-snapshot")
         _write_progress_file(progress_path, "caching_components", 40)
-        _precache_pipeline_components(pipe_base_source, cache_dir)
+        _LOG.info("DuckMotion caching non-transformer components to %s …", local_snapshot)
+        _precache_pipeline_components(pipe_base_source, local_snapshot)
 
-    _LOG.info("DuckMotion assembling pipeline from base repo.")
+    if local_snapshot and Path(local_snapshot).exists():
+        pipe_kwargs["local_files_only"] = True
+        effective_base = local_snapshot
+    else:
+        pipe_kwargs["cache_dir"] = str(Path(cache_dir).expanduser()) if cache_dir else None
+        effective_base = pipe_base_source
+
+    _LOG.info("DuckMotion assembling pipeline from %s.", effective_base)
     try:
         _write_progress_file(progress_path, "assembling_pipeline", 45)
-        pipe = WanImageToVideoPipeline.from_pretrained(pipe_base_source, **pipe_kwargs)
+        pipe = WanImageToVideoPipeline.from_pretrained(effective_base, **pipe_kwargs)
     except Exception as exc:
         raise RuntimeError(
             f"DuckMotion failed to assemble pipeline from base repo '{model_source}' with quantized transformer: {exc}"
