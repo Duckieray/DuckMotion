@@ -29,6 +29,7 @@ import time
 import traceback
 import uuid
 import gc
+import resource
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,7 @@ if _WEBBDUCK_ROOT is not None and _WEBBDUCK_ROOT not in sys.path:
 from server.storage import BASE, resolve_web_path, to_web_path
 
 try:
-    from core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, release_gpu_lease
+    from core.gpu_lease import acquire_gpu_lease_blocking, get_gpu_lease, lease_heartbeat, release_gpu_lease
 except (ImportError, ModuleNotFoundError) as _exc:
     _LOG.error(
         "DuckMotion cannot find core.gpu_lease — ensure WebbDuck repo root "
@@ -1524,9 +1525,9 @@ def _run_job(job_id: str) -> None:
             return
 
         if _should_isolate_process():
-            output_info = _run_generation_isolated(row, config, runtime_profile)
+            output_info = _run_generation_isolated(row, config, runtime_profile, lease_token=lease_token)
         else:
-            frames = _generate_frames_with_diffusers(row, config, runtime_profile)
+            frames = _generate_frames_with_diffusers(row, config, runtime_profile, lease_token=lease_token)
 
             row = _get_job(job_id) or row
             row["progress"] = {"stage": "writing_outputs", "percent": 85}
@@ -1617,7 +1618,7 @@ def _run_job(job_id: str) -> None:
                 pass
 
 
-def _run_generation_isolated(job: dict[str, Any], config: dict[str, Any], runtime_profile: dict[str, Any]) -> dict[str, Any]:
+def _run_generation_isolated(job: dict[str, Any], config: dict[str, Any], runtime_profile: dict[str, Any], *, lease_token: str | None = None) -> dict[str, Any]:
     STATE_DIR.mkdir(exist_ok=True, parents=True)
     tmp_dir = Path(tempfile.mkdtemp(prefix="duckmotion_child_", dir=str(STATE_DIR)))
     payload_path = tmp_dir / "payload.json"
@@ -1682,6 +1683,12 @@ def _run_generation_isolated(job: dict[str, Any], config: dict[str, Any], runtim
                                     deadline = _now() + 1800
                                 else:
                                     deadline = _now() + 300
+                            # Keep the GPU lease alive while the child makes progress.
+                            if lease_token and stage and marker != last_progress:
+                                try:
+                                    lease_heartbeat(token=lease_token)
+                                except Exception:
+                                    pass
                     if return_code is not None:
                         break
                     if _now() >= deadline:
@@ -1798,6 +1805,7 @@ def _generate_frames_with_diffusers(
     *,
     persist_progress: bool = True,
     progress_path: Path | None = None,
+    lease_token: str | None = None,
 ) -> list[Any]:
     params = job.get("params") or {}
     if not isinstance(params, dict):
@@ -1859,6 +1867,11 @@ def _generate_frames_with_diffusers(
             step_num = max(0, int(step_index)) + 1
             pct = min(88, 60 + int((step_num / total_steps) * 28))
             _write_progress_file(progress_path, "generating", pct, detail=f"Step {step_num}/{total_steps}")
+            if lease_token:
+                try:
+                    lease_heartbeat(token=lease_token)
+                except Exception:
+                    pass
             return callback_kwargs
 
         call_kwargs["callback_on_step_end"] = _progress_callback
@@ -3411,8 +3424,8 @@ def _should_isolate_process() -> bool:
     raw = _normalize_str(os.getenv("DUCKMOTION_ISOLATE_PROCESS") or "")
     if raw:
         return raw.lower() in {"1", "true", "yes", "on"}
-    # Default to isolated generation on Windows so plugin crashes cannot terminate WebbDuck.
-    return os.name == "nt"
+    # Default to isolated generation so plugin crashes cannot terminate WebbDuck.
+    return True
 
 
 def _should_keep_pipeline_loaded(config: dict[str, Any]) -> bool:
@@ -3476,6 +3489,15 @@ def _is_windows_access_violation_rc(code: int) -> bool:
 
 
 def _main() -> int:
+    try:
+        rlimit_gb = int(os.getenv("DUCKMOTION_RLIMIT_AS_GB", "48"))
+        limit_bytes = rlimit_gb * 1024 ** 3
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard == resource.RLIM_INFINITY or limit_bytes < hard:
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, hard if hard != resource.RLIM_INFINITY else limit_bytes))
+    except Exception:
+        pass
+
     import argparse
 
     parser = argparse.ArgumentParser(description="DuckMotion backend helper entrypoint.")
