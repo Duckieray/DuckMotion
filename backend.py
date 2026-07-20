@@ -3489,6 +3489,8 @@ def _is_windows_access_violation_rc(code: int) -> bool:
 
 
 def _main() -> int:
+    if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     try:
         rlimit_gb = int(os.getenv("DUCKMOTION_RLIMIT_AS_GB", "48"))
         limit_bytes = rlimit_gb * 1024 ** 3
