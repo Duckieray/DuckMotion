@@ -51,6 +51,13 @@ def test_detects_ltx25_with_t2v_i2v_and_audio(tmp_path):
     assert descriptor.capabilities.source_image_required is False
     assert descriptor.constraints["dimension_multiple"] == 32
     assert descriptor.constraints["frame_count_remainder"] == 1
+    assert descriptor.supported is False
+
+
+def test_existing_wan_backend_remains_runnable(tmp_path):
+    _model_index(tmp_path, "WanImageToVideoPipeline")
+    descriptor = describe_video_model(str(tmp_path), name="Wan2.2")
+    assert descriptor.supported is True
 
 
 def test_unknown_video_model_is_not_assumed_to_be_wan(tmp_path):
@@ -69,6 +76,7 @@ def test_public_descriptor_hides_architecture_and_backend():
     payload = descriptor.to_public_dict()
     assert payload["capabilities"]["text_to_video"] is True
     assert payload["defaults"]["fps"] == 24
+    assert payload["supported"] is False
     assert "architecture" not in payload
     assert "backend" not in payload
 
