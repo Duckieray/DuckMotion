@@ -10,12 +10,23 @@ DuckMotion is a separately managed WebbDuck web plugin that adds a local Wan2.2 
 - Configurable output directory with plugin-local video gallery
 - Wan2.2 I2V generation path via `diffusers.WanImageToVideoPipeline` (requires compatible diffusers build)
 
+## Architecture Roadmap
+
+The current implementation is Wan2.2-specific, but DuckMotion's target architecture is **model-driven rather than Wan-first**. The user should select a video model; DuckMotion should automatically identify its architecture, choose a compatible runtime backend, apply model-specific defaults and constraints, and expose only the source/input/output capabilities that model supports.
+
+The normal workflow must not require a Wan/LTX/architecture/engine selector. Architecture and backend details are internal implementation metadata and may be surfaced only for diagnostics.
+
+Read `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` before implementing LTX-2.5 or another video architecture. Contributors and coding agents should also read `AGENTS.md`.
+
 ## Repo Layout
 
 ```text
 DuckMotion/
+|- AGENTS.md
 |- plugin.json
 |- backend.py
+|- docs/
+|  `- MODEL_DRIVEN_VIDEO_ARCHITECTURE.md
 |- tools/
 |  `- install_webbduck_plugin.py
 `- ui/
@@ -218,3 +229,5 @@ Recommended fix:
 ## Development
 
 DuckMotion imports WebbDuck modules at runtime (storage + runtime profile resolution), so run it in a WebbDuck environment.
+
+For model/runtime architecture changes, follow `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` and `AGENTS.md`. The current Wan implementation is the compatibility baseline; new architectures should be added through model introspection and backend adapters rather than by adding architecture selectors to the normal UI.
