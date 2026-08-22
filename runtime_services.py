@@ -1,4 +1,4 @@
-"""Adapter exposing shared DuckMotion services to architecture-neutral job code."""
+"""Adapter exposing shared DuckMotion services to architecture-neutral code."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ from typing import Any
 
 
 class VideoRuntimeServices:
-    """Temporary façade over shared utilities still housed in backend.py.
+    """Temporary façade over generic utilities still housed in backend.py.
 
-    The coordinator and video backends depend on this generic façade rather than
-    on Wan-specific module globals. As generic persistence/gallery/GPU modules
-    are extracted, this adapter can disappear without changing backend APIs.
+    Public routing, health, config, and job coordination depend on this neutral
+    façade rather than on Wan-shaped module globals. As the underlying helpers
+    are physically extracted, this adapter can disappear without changing the
+    model-facing contracts.
     """
 
     def __init__(self, implementation: Any) -> None:
@@ -19,6 +20,12 @@ class VideoRuntimeServices:
 
     def now(self) -> float:
         return float(self._impl._now())
+
+    def load_config(self) -> dict[str, Any]:
+        return dict(self._impl._load_config())
+
+    def save_config(self, config: dict[str, Any]) -> None:
+        self._impl._save_config(dict(config))
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self._impl._get_job(job_id)
@@ -40,6 +47,20 @@ class VideoRuntimeServices:
 
     def runtime_profile(self) -> dict[str, Any]:
         return self._impl._get_runtime_profile_or_raise()
+
+    def runtime_profile_safe(self) -> dict[str, Any]:
+        return dict(self._impl._get_runtime_profile_safe())
+
+    def gpu_lease(self) -> dict[str, Any]:
+        value = self._impl.get_gpu_lease()
+        return dict(value) if isinstance(value, dict) else {"held": False}
+
+    def queue_snapshot(self) -> dict[str, Any]:
+        value = self._impl._queue_snapshot()
+        return dict(value) if isinstance(value, dict) else {}
+
+    def output_writable(self, config: dict[str, Any]) -> tuple[bool, str | None]:
+        return self._impl._probe_writable_dir(self.resolve_output_dir(config))
 
     def acquire_gpu_lease(self, **kwargs: Any) -> dict[str, Any]:
         return self._impl.acquire_gpu_lease_blocking(**kwargs)
