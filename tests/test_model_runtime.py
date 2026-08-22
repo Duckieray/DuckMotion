@@ -51,9 +51,6 @@ def test_detects_wan_t2v_as_runnable(tmp_path):
 
 
 def test_wan_ti2v_tracks_upstream_i2v_but_only_advertises_current_diffusers_workflow(tmp_path):
-    # HF snapshot folder names are revision hashes, so canonical model identity
-    # participates in detection. The upstream TI2V model supports I2V, but the
-    # current Diffusers WanPipeline still exposes only text conditioning for it.
     _model_index(tmp_path, "WanPipeline")
     descriptor = describe_video_model(
         str(tmp_path),
@@ -65,6 +62,14 @@ def test_wan_ti2v_tracks_upstream_i2v_but_only_advertises_current_diffusers_work
     assert descriptor.detection["variant"] == "ti2v"
     assert descriptor.detection["upstream_image_to_video"] is True
     assert descriptor.detection["runtime_image_to_video"] is False
+    assert descriptor.defaults == {
+        "width": 1280,
+        "height": 704,
+        "num_frames": 121,
+        "fps": 24,
+        "num_inference_steps": 50,
+        "guidance_scale": 5.0,
+    }
     assert descriptor.supported is True
 
 
@@ -92,6 +97,8 @@ def test_detects_ltx25_with_live_t2v_i2v_audio_and_two_stage_constraints(tmp_pat
 
 def test_wan_turbo_defaults_are_checkpoint_specific():
     descriptor = describe_video_model("Wan-AI/Wan2.2-Turbo-TI2V-5B-Diffusers")
+    assert descriptor.defaults["width"] == 1280
+    assert descriptor.defaults["height"] == 704
     assert descriptor.defaults["num_inference_steps"] == 4
     assert descriptor.defaults["guidance_scale"] == 1.0
     assert descriptor.defaults["fps"] == 24
