@@ -86,8 +86,8 @@ cleanup without spending the full reference runtime on a broken setup.
 
 | Order | Target | Workflow | Canary | Reference gate |
 |---|---|---|---|---|
-| 1 | Wan2.2 TI2V-5B | T2V | 640x384, 17 frames, seed 0 | 1280x704, 121 frames, 24 fps, published/model defaults |
-| 2 | Wan2.2 I2V A14B | I2V | small source, 512-ish resolution, 17 frames, seed 0 | only attempt normal settings if the 16 GB load/offload path is viable |
+| 1 | Wan2.2 TI2V-5B | T2V | 640x384, 33 frames, 24 fps, seed 0 | 1280x704, 121 frames, 24 fps, published/model defaults |
+| 2 | Wan2.2 I2V A14B | I2V | source image, 512x320, 17 frames, seed 0 | only attempt normal settings if the 16 GB load/offload path is viable |
 | 3 | LTX-2.5 | T2V + audio | final 768x512, 33 frames, 24 fps, seed 0 | final 1536x1024, 121 frames, two-stage distilled schedule |
 | 4 | LTX-2.5 | I2V + audio | same canary dimensions with a source image | reference-size I2V only after T2V passes |
 
@@ -100,7 +100,62 @@ For LTX, do **not** replace the explicit distilled sigma schedules with an
 arbitrary low step count for the canary. Reduce dimensions/frames instead; the
 sampling schedule is model semantics.
 
-## 4. Pass conditions
+## 4. API-driven runner
+
+`tools/run_hardware_smoke.py` exercises DuckMotion through its mounted WebbDuck
+plugin API. It does not import Wan/LTX implementation modules directly, so a pass
+covers model selection/config, readiness, source staging, generic job
+coordination, GPU lease handling, backend routing, persisted job state and
+gallery artifact normalization.
+
+Safe preflight only:
+
+```bash
+python tools/run_hardware_smoke.py
+```
+
+The default API base is:
+
+```text
+http://127.0.0.1:8010/plugins/web/duckmotion/api
+```
+
+Preflight requires target weights to be **fully cached locally**. A repo that is
+merely reachable from Hugging Face is reported `BLOCKED`; the runner will not
+silently start a 34-126 GB download through `from_pretrained`.
+
+Run the practical canaries only:
+
+```bash
+python tools/run_hardware_smoke.py --execute
+```
+
+Plain `--execute` deliberately skips:
+
+- Wan2.2 I2V A14B feasibility;
+- Wan2.2 TI2V-5B reference-size 1280x704/121-frame gate;
+- LTX-2.5 reference-size 1536x1024/121-frame gate.
+
+Those require an additional explicit acknowledgement:
+
+```bash
+python tools/run_hardware_smoke.py --execute --include-heavy
+```
+
+Rows can also be isolated while debugging:
+
+```bash
+python tools/run_hardware_smoke.py --execute --only wan-ti2v-5b-canary
+python tools/run_hardware_smoke.py --execute --only ltx25-t2v-canary
+python tools/run_hardware_smoke.py --execute --only ltx25-i2v-canary
+```
+
+The runner stages one deterministic synthetic input image through DuckMotion's
+normal `/staging/upload` route, restores the original DuckMotion config when it
+finishes, removes the temporary staged image, requests an engine unload after
+every row, and writes its JSON report incrementally under `smoke_reports/`.
+
+## 5. Pass conditions
 
 ### Wan
 
@@ -124,7 +179,7 @@ A row additionally requires:
 - synchronized audio produced and muxed into the output;
 - final dimensions/frame count match normalized model constraints.
 
-## 5. What to record
+## 6. What to record
 
 For every run record:
 
@@ -140,7 +195,12 @@ For every run record:
 - audio presence/sample rate for LTX;
 - CUDA memory state after worker exit/model switch.
 
-## 6. Failure classification
+The runner automatically records readiness diagnostics, normalized persisted
+job params, returned output/gallery metadata and end-to-end job elapsed time.
+Worker-specific load timing, peak host RAM and external CUDA-memory observations
+can be added after the first real run shows which measurements are most useful.
+
+## 7. Failure classification
 
 Classify failures before changing generic architecture:
 
