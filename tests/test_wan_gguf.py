@@ -66,10 +66,33 @@ def test_gguf_readiness_probes_quantized_runtime_requirements(tmp_path, monkeypa
 
     assert result["ready"] is True
     assert result["source_format"] == "gguf"
+    assert result["gguf_pair_present"] is True
     assert captured["python"] == "/runtime/wan/python"
     assert ("diffusers", "WanTransformer3DModel") in captured["symbols"]
     assert ("diffusers", "GGUFQuantizationConfig") in captured["symbols"]
     assert ("gguf", "GGUFReader") in captured["symbols"]
+
+
+def test_gguf_readiness_blocks_missing_pair_without_probing_runtime(tmp_path, monkeypatch):
+    high, low = _pair(tmp_path)
+    low.unlink()
+    descriptor = describe_video_model(
+        str(high),
+        name="Wan2.2 Enhanced NSFW I2V T2V Q8",
+    )
+    called = False
+
+    def fake_probe(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"ready": True}
+
+    monkeypatch.setattr(wan_backend, "probe_python_runtime", fake_probe)
+    result = WanDiffusersBackend().readiness(descriptor)
+    assert result["ready"] is False
+    assert "matching H/L GGUF file is missing" in result["reason"]
+    assert "will not download a stock second transformer" in result["reason"]
+    assert called is False
 
 
 def test_worker_injects_both_gguf_transformers_into_pipeline():
@@ -78,5 +101,6 @@ def test_worker_injects_both_gguf_transformers_into_pipeline():
     assert "WanTransformer3DModel.from_single_file" in text
     assert "GGUFQuantizationConfig(compute_dtype=dtype)" in text
     assert 'kwargs["transformer_2"] = transformer_2' in text
+    assert "unexpected ~57 GB download" in text
     assert "DUCKMOTION_WAN_GGUF_I2V_BASE" in text
     assert "DUCKMOTION_WAN_GGUF_T2V_BASE" in text
