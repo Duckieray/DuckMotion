@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
-from model_discovery import discover_video_models
-from model_runtime import describe_video_model
-
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from model_discovery import discover_video_models
+from model_runtime import describe_video_model
 
 
 def _load_legacy_backend():
