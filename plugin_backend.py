@@ -21,22 +21,24 @@ from model_discovery import discover_video_models
 from model_runtime import backend_resolver, describe_video_model
 from runtime_services import VideoRuntimeServices
 from runtime_surfaces import VideoConfigPayload, VideoRuntimeSurfaces
+from storage_api import build_storage_router
 from wan_backend import ensure_registered as ensure_wan_registered
 
 
 def _load_wan_implementation():
-    """Load the remaining implementation primitives still physically in backend.py.
+    """Load the remaining Wan pipeline implementation from backend.py.
 
-    backend.py no longer owns DuckMotion's public routing, job orchestration,
-    model catalog, config, health, or engine status. It is only a temporary
-    implementation source until the remaining utility functions are extracted.
+    Public routing, orchestration, health/config/status, persistence, staging,
+    and gallery ownership have moved to architecture-neutral modules. The old
+    module is now an implementation source for the mature Wan pipeline plus a
+    few support routes pending the final UI/server cutover.
     """
     spec = importlib.util.spec_from_file_location(
         "duckmotion_wan_implementation",
         PLUGIN_ROOT / "backend.py",
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load DuckMotion implementation module.")
+        raise RuntimeError("Unable to load DuckMotion Wan implementation module.")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -110,6 +112,16 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
             ("/engine/status", "GET"),
             ("/engine/unload", "POST"),
             ("/engine/generate", "POST"),
+            ("/engine/jobs", "GET"),
+            ("/engine/jobs/{job_id}", "GET"),
+            ("/engine/cancel", "POST"),
+            ("/jobs/clear", "POST"),
+            ("/staging/upload", "POST"),
+            ("/staging/from-webbduck", "POST"),
+            ("/staging", "GET"),
+            ("/staging/{name}", "DELETE"),
+            ("/gallery", "GET"),
+            ("/gallery/file/{run_id}/{filename}", "GET"),
         },
     )
 
@@ -164,6 +176,7 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
 
         return {"ok": True, "job": job, "model": descriptor.to_public_dict()}
 
+    router.include_router(build_storage_router(services.storage, services.load_config))
     return router
 
 
