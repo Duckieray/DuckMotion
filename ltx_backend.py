@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
+from runtime_probe import probe_python_runtime
 
 
 class LTX25IsolatedBackend(VideoBackend):
@@ -46,29 +47,18 @@ class LTX25IsolatedBackend(VideoBackend):
         ):
             return dict(self._readiness_payload)
 
-        probe = (
-            "from diffusers import LTX2ImageToVideoPipeline, LTX2LatentUpsamplePipeline, LTX2Pipeline; "
-            "from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel; "
-            "from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES, STAGE_2_DISTILLED_SIGMA_VALUES; "
-            "from diffusers.utils import encode_video"
+        payload = probe_python_runtime(
+            python_exe,
+            (
+                ("diffusers", "LTX2Pipeline"),
+                ("diffusers", "LTX2ImageToVideoPipeline"),
+                ("diffusers", "LTX2LatentUpsamplePipeline"),
+                ("diffusers.pipelines.ltx2.latent_upsampler", "LTX2LatentUpsamplerModel"),
+                ("diffusers.pipelines.ltx2.utils", "DISTILLED_SIGMA_VALUES"),
+                ("diffusers.pipelines.ltx2.utils", "STAGE_2_DISTILLED_SIGMA_VALUES"),
+                ("diffusers.utils", "encode_video"),
+            ),
         )
-        try:
-            completed = subprocess.run(
-                [python_exe, "-c", probe],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if completed.returncode == 0:
-                payload = {"ready": True, "reason": None}
-            else:
-                detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-                reason = detail[-1] if detail else f"Runtime probe exited with code {completed.returncode}."
-                payload = {"ready": False, "reason": f"LTX runtime dependencies unavailable: {reason}"}
-        except Exception as exc:
-            payload = {"ready": False, "reason": f"Unable to probe LTX runtime: {exc}"}
-
         self._readiness_checked_at = now
         self._readiness_python = python_exe
         self._readiness_payload = dict(payload)
@@ -171,7 +161,6 @@ class LTX25IsolatedBackend(VideoBackend):
             return result
 
     def unload(self) -> None:
-        # LTX is process-isolated; worker exit releases model resources.
         return None
 
 
