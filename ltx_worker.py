@@ -1,20 +1,26 @@
 """Standalone LTX-2.5 Diffusers worker.
 
-Runs the distilled LTX-2.5 path with its explicit sigma schedule and synchronized
-audio. This worker is intentionally isolated because LTX-2.5 currently requires
-Diffusers main rather than a released package.
+Runs the reference distilled two-stage LTX-2.5 path:
+1. stage-1 diffusion at half the requested final resolution;
+2. latent 2x spatial upsampling;
+3. short stage-2 refinement at final resolution with synchronized audio.
+
+The worker is isolated because LTX-2.5 currently requires Diffusers main rather
+than a released package and has very different memory requirements from Wan.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import traceback
 from pathlib import Path
 
 
-def _snap_dimension(value: int) -> int:
-    return max(256, (int(value) // 32) * 32)
+def _snap_final_dimension(value: int) -> int:
+    # Final output is halved for stage 1; stage 1 must still be divisible by 32.
+    return max(512, (int(value) // 64) * 64)
 
 
 def _snap_frames(value: int) -> int:
@@ -33,39 +39,91 @@ def _save_poster(video, path: Path) -> None:
     Image.fromarray(frame).convert("RGB").save(path, quality=92)
 
 
+def _configure_main_pipeline(pipe, device: str, total_vram_gb: float) -> str:
+    if device != "cuda":
+        pipe.to("cpu")
+        return "cpu"
+
+    mode = str(os.getenv("DUCKMOTION_LTX_OFFLOAD", "auto")).strip().lower()
+    if mode == "auto":
+        # The distilled 22B transformer plus Gemma 4 encoder cannot reside on
+        # a 16 GB card. Sequential offload is slower but is the safe default.
+        mode = "sequential" if total_vram_gb < 32.0 else "model"
+
+    if mode in {"sequential", "seq"}:
+        pipe.enable_sequential_cpu_offload(device="cuda")
+        return "sequential"
+    if mode in {"model", "cpu"}:
+        pipe.enable_model_cpu_offload(device="cuda")
+        return "model"
+    pipe.to("cuda")
+    return "none"
+
+
 def _run(request: dict, output_dir: Path) -> dict:
     import torch
-    from diffusers import LTX2ImageToVideoPipeline, LTX2Pipeline
-    from diffusers.pipelines.ltx2.utils import DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
+    from diffusers import (
+        LTX2ImageToVideoPipeline,
+        LTX2LatentUpsamplePipeline,
+        LTX2Pipeline,
+    )
+    from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel
+    from diffusers.pipelines.ltx2.utils import (
+        DEFAULT_NEGATIVE_PROMPT,
+        DISTILLED_SIGMA_VALUES,
+        STAGE_2_DISTILLED_SIGMA_VALUES,
+    )
     from diffusers.utils import encode_video, load_image
 
     if not torch.cuda.is_available():
-        raise RuntimeError("LTX-2.5 runtime currently requires a CUDA/ROCm torch device")
+        raise RuntimeError("LTX-2.5 runtime currently requires CUDA")
 
     model_path = str(request["model_path"])
-    prompt = str(request["prompt"])
-    width = _snap_dimension(int(request.get("width") or 768))
-    height = _snap_dimension(int(request.get("height") or 512))
+    prompt = str(request.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("Prompt is required")
+
+    final_width = _snap_final_dimension(int(request.get("width") or 1536))
+    final_height = _snap_final_dimension(int(request.get("height") or 1024))
+    stage1_width = final_width // 2
+    stage1_height = final_height // 2
     num_frames = _snap_frames(int(request.get("num_frames") or 121))
     fps = float(request.get("fps") or 24.0)
-    seed = int(request.get("seed") or 0)
-    input_image = request.get("input_image")
+    seed = int(request.get("seed") if request.get("seed") is not None else 0)
+    input_image = str(request.get("input_image") or "").strip() or None
 
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     pipeline_cls = LTX2ImageToVideoPipeline if input_image else LTX2Pipeline
-    pipe = pipeline_cls.from_pretrained(model_path, dtype=dtype)
-    pipe.enable_model_cpu_offload()
+    try:
+        pipe = pipeline_cls.from_pretrained(model_path, dtype=dtype, low_cpu_mem_usage=True)
+    except TypeError:
+        pipe = pipeline_cls.from_pretrained(model_path, torch_dtype=dtype, low_cpu_mem_usage=True)
+
+    total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    offload = _configure_main_pipeline(pipe, "cuda", total_vram_gb)
     pipe.vae.enable_tiling()
 
+    latent_upsampler = LTX2LatentUpsamplerModel.from_pretrained(
+        model_path,
+        subfolder="latent_upsampler",
+        dtype=dtype,
+    )
+    upsample_pipe = LTX2LatentUpsamplePipeline(
+        vae=pipe.vae,
+        latent_upsampler=latent_upsampler,
+    )
+    try:
+        upsample_pipe.enable_model_cpu_offload(device="cuda")
+        upsample_offload = "model"
+    except Exception:
+        latent_upsampler.to("cuda")
+        upsample_offload = "cuda"
+
     generator = torch.Generator("cuda").manual_seed(seed)
-    kwargs = {
+    shared = {
         "prompt": prompt,
         "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
-        "width": width,
-        "height": height,
-        "num_frames": num_frames,
         "frame_rate": fps,
-        "sigmas": DISTILLED_SIGMA_VALUES,
         "guidance_scale": 1.0,
         "audio_guidance_scale": 1.0,
         "stg_scale": 0.0,
@@ -73,13 +131,48 @@ def _run(request: dict, output_dir: Path) -> dict:
         "modality_scale": 1.0,
         "audio_modality_scale": 1.0,
         "generator": generator,
-        "output_type": "np",
         "return_dict": False,
     }
     if input_image:
-        kwargs["image"] = load_image(str(input_image))
+        shared["image"] = load_image(input_image).convert("RGB")
 
-    video, audio = pipe(**kwargs)
+    # Stage 1: coherent low-resolution video/audio latents using the checkpoint's
+    # explicit distilled sigma schedule. Do not replace this with a generic
+    # num_inference_steps schedule; that silently reduces quality.
+    video_latent, audio_latent = pipe(
+        width=stage1_width,
+        height=stage1_height,
+        num_frames=num_frames,
+        sigmas=DISTILLED_SIGMA_VALUES,
+        output_type="latent",
+        **shared,
+    )
+
+    upsample_kwargs = {
+        "latents": video_latent,
+        "output_type": "latent",
+        "return_dict": False,
+    }
+    try:
+        upscaled_video_latent = upsample_pipe(
+            latents_normalized=False,
+            **upsample_kwargs,
+        )[0]
+    except TypeError:
+        # Older LTX2 Diffusers revisions inferred latent normalization.
+        upscaled_video_latent = upsample_pipe(**upsample_kwargs)[0]
+
+    # Stage 2: short full-resolution refinement, continuing the same generator
+    # stream and the audio latents produced in stage 1.
+    video, audio = pipe(
+        latents=upscaled_video_latent,
+        audio_latents=audio_latent,
+        num_frames=num_frames,
+        sigmas=STAGE_2_DISTILLED_SIGMA_VALUES,
+        noise_scale=STAGE_2_DISTILLED_SIGMA_VALUES[0],
+        output_type="np",
+        **shared,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / "video.mp4"
@@ -101,13 +194,24 @@ def _run(request: dict, output_dir: Path) -> dict:
         "created_at": __import__("time").time(),
         "frame_count": num_frames,
         "fps": fps,
-        "width": width,
-        "height": height,
+        "width": final_width,
+        "height": final_height,
+        "stage1_width": stage1_width,
+        "stage1_height": stage1_height,
         "seed": seed,
         "audio": True,
         "operation": "image_to_video" if input_image else "text_to_video",
         "prompt": prompt,
-        "sampling": "distilled",
+        "sampling": "distilled_two_stage",
+        "stage1_sigma_count": len(DISTILLED_SIGMA_VALUES),
+        "stage2_sigma_count": len(STAGE_2_DISTILLED_SIGMA_VALUES),
+        "runtime": {
+            "device": "cuda",
+            "dtype": str(dtype).replace("torch.", ""),
+            "offload": offload,
+            "upsampler_offload": upsample_offload,
+            "total_vram_gb": round(total_vram_gb, 2),
+        },
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
