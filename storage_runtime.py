@@ -98,22 +98,26 @@ class VideoStorageRuntime:
                 pass
             return False, str(exc)
 
+    @staticmethod
+    def _validate_image_path(path: Path) -> Path:
+        if path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
+            raise ValueError(f"Unsupported input image type: {path.suffix}")
+        return path
+
     def resolve_input_image(self, raw_path: str) -> Path:
         raw = str(raw_path or "").strip()
         if not raw:
             raise ValueError("Input image path is empty")
         direct = Path(raw).expanduser()
         if direct.exists() and direct.is_file():
-            return direct.resolve()
+            return self._validate_image_path(direct.resolve())
         try:
             resolved = Path(resolve_web_path(raw)).resolve()
         except Exception as exc:
             raise FileNotFoundError(f"Input image not found: {raw}") from exc
         if not resolved.exists() or not resolved.is_file():
             raise FileNotFoundError(f"Input image not found: {raw}")
-        if resolved.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
-            raise ValueError(f"Unsupported input image type: {resolved.suffix}")
-        return resolved
+        return self._validate_image_path(resolved)
 
     @staticmethod
     def safe_web_path(path: Path) -> str | None:
