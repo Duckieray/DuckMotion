@@ -34,6 +34,62 @@ def _register_installed_backends() -> None:
     ensure_ltx_registered()
 
 
+def _weights_state(item: dict[str, Any]) -> dict[str, Any]:
+    source = str(item.get("source") or "").strip()
+    if not source:
+        return {"present": False, "source": "", "kind": "unknown"}
+    path = Path(source).expanduser()
+    if path.exists():
+        return {
+            "present": True,
+            "source": str(path),
+            "kind": "file" if path.is_file() else "directory",
+        }
+    if "/" in source and not source.startswith(("/", "./", "../")):
+        return {"present": None, "source": source, "kind": "remote_or_uncached"}
+    return {"present": False, "source": source, "kind": "missing"}
+
+
+def _runtime_readiness() -> dict[str, Any]:
+    config = services.load_config()
+    catalog = discover_video_models(config)
+    _register_installed_backends()
+    rows: list[dict[str, Any]] = []
+    for item in catalog.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        identity = str(item.get("repo_id") or item.get("source") or item.get("name") or "").strip()
+        name = str(item.get("name") or identity).strip()
+        descriptor = describe_video_model(identity, name=name)
+        public = descriptor.to_public_dict()
+        if not descriptor.supported:
+            runtime = {
+                "ready": False,
+                "reason": "No installed backend currently implements this model's runnable workflow.",
+            }
+        else:
+            try:
+                runtime = backend_resolver.readiness(descriptor)
+            except Exception as exc:
+                runtime = {"ready": False, "reason": str(exc or exc.__class__.__name__)}
+        rows.append(
+            {
+                **public,
+                "location": item.get("location"),
+                "weights": _weights_state(item),
+                "runtime": runtime,
+                "ready": bool(public.get("supported") and runtime.get("ready")),
+            }
+        )
+    supported_rows = [row for row in rows if row.get("supported")]
+    return {
+        "ready": bool(supported_rows) and all(row.get("ready") for row in supported_rows),
+        "count": len(rows),
+        "items": rows,
+        "hf_cache": catalog.get("hf_cache"),
+    }
+
+
 runtime_surfaces = VideoRuntimeSurfaces(
     services=services,
     resolver=backend_resolver,
@@ -63,6 +119,11 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
     @router.get("/health")
     def health() -> dict[str, Any]:
         return runtime_surfaces.health()
+
+    @router.get("/runtime-readiness")
+    def runtime_readiness() -> dict[str, Any]:
+        """Probe every discovered model/runtime without loading model weights."""
+        return _runtime_readiness()
 
     @router.get("/config")
     def get_config() -> dict[str, Any]:
