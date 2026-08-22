@@ -36,7 +36,7 @@ def _save_poster(video, path: Path) -> None:
 def _run(request: dict, output_dir: Path) -> dict:
     import torch
     from diffusers import LTX2ImageToVideoPipeline, LTX2Pipeline
-    from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
+    from diffusers.pipelines.ltx2.utils import DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
     from diffusers.utils import encode_video, load_image
 
     if not torch.cuda.is_available():
@@ -54,16 +54,13 @@ def _run(request: dict, output_dir: Path) -> dict:
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     pipeline_cls = LTX2ImageToVideoPipeline if input_image else LTX2Pipeline
     pipe = pipeline_cls.from_pretrained(model_path, dtype=dtype)
-
-    # LTX is large enough that CPU offload is the default even on 24 GB cards.
-    # The backend-specific environment can later opt into more aggressive
-    # placement/quantization without changing DuckMotion's request contract.
-    pipe.enable_sequential_cpu_offload(device="cuda")
+    pipe.enable_model_cpu_offload()
     pipe.vae.enable_tiling()
 
     generator = torch.Generator("cuda").manual_seed(seed)
     kwargs = {
         "prompt": prompt,
+        "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
         "width": width,
         "height": height,
         "num_frames": num_frames,
@@ -71,6 +68,10 @@ def _run(request: dict, output_dir: Path) -> dict:
         "sigmas": DISTILLED_SIGMA_VALUES,
         "guidance_scale": 1.0,
         "audio_guidance_scale": 1.0,
+        "stg_scale": 0.0,
+        "audio_stg_scale": 0.0,
+        "modality_scale": 1.0,
+        "audio_modality_scale": 1.0,
         "generator": generator,
         "output_type": "np",
         "return_dict": False,
@@ -106,6 +107,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "audio": True,
         "operation": "image_to_video" if input_image else "text_to_video",
         "prompt": prompt,
+        "sampling": "distilled",
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
