@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,13 +16,24 @@ from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 from runtime_probe import probe_python_runtime
 
 
+def _gguf_pair_mate(path: Path) -> Path | None:
+    stem = path.stem
+    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    if match:
+        other = "L" if match.group(3).upper() == "H" else "H"
+        candidate = path.with_name(f"{match.group(1)}{match.group(2)}{other}{path.suffix}")
+        if candidate.exists():
+            return candidate
+    return None
+
+
 class WanDiffusersBackend(VideoBackend):
     backend_id = "wan_diffusers"
     _readiness_ttl_seconds = 60.0
 
     def __init__(self) -> None:
         self._readiness_checked_at = 0.0
-        self._readiness_key: tuple[str, str] | None = None
+        self._readiness_key: tuple[str, str, str] | None = None
         self._readiness_payload: dict[str, Any] | None = None
 
     def can_handle(self, descriptor: VideoModelDescriptor) -> bool:
@@ -39,8 +51,26 @@ class WanDiffusersBackend(VideoBackend):
             }
 
         python_exe = os.getenv("DUCKMOTION_WAN_PYTHON") or sys.executable
-        source_format = str((descriptor.detection or {}).get("format") or "diffusers").lower()
-        readiness_key = (python_exe, source_format)
+        detection = descriptor.detection or {}
+        source_format = str(detection.get("format") or "diffusers").lower()
+        pair_role = str(detection.get("pair_role") or "").upper()
+        pair_state = "none"
+        if source_format == "gguf" and pair_role in {"H", "L"}:
+            source_path = Path(descriptor.source).expanduser()
+            mate = _gguf_pair_mate(source_path)
+            if mate is None:
+                return {
+                    "ready": False,
+                    "source_format": "gguf",
+                    "reason": (
+                        f"Wan GGUF checkpoint '{source_path.name}' is an {pair_role} half, "
+                        "but its matching H/L GGUF file is missing. Put both files beside each "
+                        "other; DuckMotion will not download a stock second transformer as a fallback."
+                    ),
+                }
+            pair_state = str(mate)
+
+        readiness_key = (python_exe, source_format, pair_state)
         now = time.monotonic()
         if (
             self._readiness_payload is not None
@@ -66,6 +96,8 @@ class WanDiffusersBackend(VideoBackend):
 
         payload = probe_python_runtime(python_exe, tuple(symbols))
         payload["source_format"] = source_format
+        if pair_state != "none":
+            payload["gguf_pair_present"] = True
         self._readiness_checked_at = now
         self._readiness_key = readiness_key
         self._readiness_payload = dict(payload)
