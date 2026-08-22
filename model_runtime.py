@@ -258,5 +258,16 @@ class VideoBackendResolver:
     def ids(self) -> tuple[str, ...]:
         return tuple(self._backends.keys())
 
+    def unload_all(self) -> None:
+        """Release resources for every installed backend without family branching."""
+        errors: list[Exception] = []
+        for backend in tuple(self._backends.values()):
+            try:
+                backend.unload()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise RuntimeError(f"Failed to unload {len(errors)} DuckMotion backend(s): {errors[0]}")
+
 
 backend_resolver = VideoBackendResolver()
