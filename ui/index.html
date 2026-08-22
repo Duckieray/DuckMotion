@@ -8,15 +8,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./capabilities.css" />
 </head>
 <body>
-  <div id="app" class="wan-app">
+  <div id="app" class="wan-app model-driven-app">
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">DM</span>
         <div class="brand-copy">
           <strong>DuckMotion</strong>
-          <span>Wan2.2 I2V • Local diffusers runtime for WebbDuck</span>
+          <span>Model-driven local video generation for WebbDuck</span>
         </div>
       </div>
 
@@ -40,64 +41,38 @@
       <section id="view-setup" class="view active">
         <div class="grid two-col">
           <section class="panel">
-            <div class="panel-head">Runtime + Model</div>
+            <div class="panel-head">Video Model</div>
             <div class="panel-body stack">
-              <label class="label" for="model-id-or-path">Wan Model (HF repo ID or local path)</label>
-              <input id="model-id-or-path" class="input" type="text" placeholder="Wan-AI/Wan2.2-I2V-A14B-Diffusers" />
+              <label class="label" for="discovered-models">Model</label>
               <div class="row">
-                <select id="discovered-models" class="input select-grow" aria-label="Discovered local Wan models">
-                  <option value="">Scanning local Wan models…</option>
+                <select id="discovered-models" class="input select-grow" aria-label="Discovered video models">
+                  <option value="">Scanning models…</option>
                 </select>
-                <button id="refresh-models" class="btn btn-secondary btn-sm" type="button">Refresh Models</button>
+                <button id="refresh-models" class="btn btn-secondary btn-sm" type="button">Refresh</button>
               </div>
-              <p id="discovered-models-hint" class="hint">
-                Auto-finds models from <code>checkpoint/wan</code> and Hugging Face cache.
-              </p>
+              <div id="selected-model-summary" class="model-profile-card muted">Select a model to see its capabilities.</div>
 
               <details class="advanced-block">
-                <summary>Advanced Paths</summary>
+                <summary>Advanced model and output paths</summary>
                 <div class="stack advanced-content">
-                  <label class="label" for="models-dir">Models Cache Dir (optional)</label>
-                  <input id="models-dir" class="input" type="text" placeholder="/path/to/models-cache" />
+                  <label class="label" for="model-id-or-path">Custom model source</label>
+                  <input id="model-id-or-path" class="input" type="text" placeholder="HF repo ID or local model path" />
+                  <p class="hint">Use this only for a model that discovery has not listed yet. Architecture/runtime selection is automatic.</p>
 
-                  <label class="label" for="output-dir">Output Dir (optional)</label>
+                  <label class="label" for="models-dir">Additional models directory</label>
+                  <input id="models-dir" class="input" type="text" placeholder="Optional local model root" />
+
+                  <label class="label" for="output-dir">Output directory</label>
                   <input id="output-dir" class="input" type="text" placeholder="Uses WebbDuck outputs by default" />
                 </div>
               </details>
 
-              <div class="field-grid">
-                <div>
-                  <label class="label" for="default-width">Default Width</label>
-                  <input id="default-width" class="input" type="number" min="256" step="16" />
-                </div>
-                <div>
-                  <label class="label" for="default-height">Default Height</label>
-                  <input id="default-height" class="input" type="number" min="256" step="16" />
-                </div>
-                <div>
-                  <label class="label" for="default-frames">Default Frames</label>
-                  <input id="default-frames" class="input" type="number" min="8" max="241" />
-                </div>
-                <div>
-                  <label class="label" for="default-fps">Default FPS</label>
-                  <input id="default-fps" class="input" type="number" min="1" max="60" />
-                </div>
-                <div>
-                  <label class="label" for="default-steps">Default Steps</label>
-                  <input id="default-steps" class="input" type="number" min="1" max="120" />
-                </div>
-                <div>
-                  <label class="label" for="default-guidance">Default Guidance</label>
-                  <input id="default-guidance" class="input" type="number" min="0" max="20" step="0.1" />
-                </div>
-              </div>
-
               <div class="row">
-                <button id="save-config" class="btn btn-primary" type="button">Save Config</button>
+                <button id="save-config" class="btn btn-primary" type="button">Save</button>
                 <button id="check-health" class="btn btn-secondary" type="button">Run Checks</button>
-                <button id="unload-engine" class="btn btn-secondary" type="button">Unload Model</button>
+                <button id="unload-engine" class="btn btn-secondary" type="button">Unload Models</button>
               </div>
-              <p class="hint">Uses WebbDuck runtime/device settings automatically.</p>
+              <p class="hint">The selected checkpoint determines its runtime, supported inputs, defaults, and constraints.</p>
             </div>
           </section>
 
@@ -105,24 +80,9 @@
             <div class="panel-head">Readiness</div>
             <div class="panel-body stack">
               <div id="readiness-badges" class="badge-grid"></div>
-              <div id="readiness-summary" class="callout muted">Loading readiness...</div>
-              <div class="subgrid">
-                <div>
-                  <h3 class="mini-title">Missing / Warnings</h3>
-                  <ul id="missing-list" class="list compact"></ul>
-                </div>
-                <div>
-                  <h3 class="mini-title">Runtime Profile (WebbDuck)</h3>
-                  <div id="runtime-summary" class="stats-grid"></div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">Engine Status</div>
-            <div class="panel-body stack">
-              <div id="engine-summary" class="stats-grid"></div>
+              <div id="readiness-summary" class="callout muted">Loading readiness…</div>
+              <div id="runtime-summary" class="stats-grid"></div>
+              <ul id="missing-list" class="list compact"></ul>
             </div>
           </section>
         </div>
@@ -130,9 +90,17 @@
 
       <section id="view-create" class="view">
         <div class="grid two-col">
-          <section class="panel">
-            <div class="panel-head">Staging</div>
+          <section class="panel panel-span-2">
+            <div class="panel-head">Selected Model</div>
+            <div class="panel-body">
+              <div id="create-model-profile" class="model-profile-card muted">Choose a model in Setup.</div>
+            </div>
+          </section>
+
+          <section id="source-panel" class="panel hidden">
+            <div class="panel-head">Source Image</div>
             <div class="panel-body stack">
+              <div id="source-requirement" class="callout muted">This model can use a source image.</div>
               <form id="upload-form" class="stack">
                 <input id="upload-file" class="input" type="file" accept="image/png,image/jpeg,image/webp" />
                 <div class="row">
@@ -145,83 +113,65 @@
             </div>
           </section>
 
-          <section class="panel">
+          <section id="recent-panel" class="panel hidden">
             <div class="panel-head">Recent WebbDuck Images</div>
             <div class="panel-body stack">
               <div class="row">
-                <button id="refresh-recent" class="btn btn-secondary" type="button">Refresh Recent</button>
-                <span class="hint-inline">Copy an image into DuckMotion staging, then generate.</span>
+                <button id="refresh-recent" class="btn btn-secondary" type="button">Refresh</button>
+                <span id="recent-hint" class="hint-inline">Stage an image for the selected model.</span>
               </div>
               <div id="recent-list" class="media-list"></div>
             </div>
           </section>
 
           <section class="panel panel-span-2">
-            <div class="panel-head">Generate Wan2.2 I2V</div>
+            <div class="panel-head">Generate Video</div>
             <div class="panel-body stack">
               <label class="label" for="prompt">Prompt</label>
-              <textarea id="prompt" class="textarea textarea-md" spellcheck="false" placeholder="Describe the motion you want from the source image..."></textarea>
+              <textarea id="prompt" class="textarea textarea-md" spellcheck="false" placeholder="Describe the video you want to generate…"></textarea>
 
-              <label class="label" for="negative-prompt">Negative Prompt (optional)</label>
-              <textarea id="negative-prompt" class="textarea textarea-sm" spellcheck="false" placeholder="blurry, artifacts, low quality"></textarea>
+              <div id="negative-prompt-group">
+                <label class="label" for="negative-prompt">Negative Prompt</label>
+                <textarea id="negative-prompt" class="textarea textarea-sm" spellcheck="false" placeholder="What should the model avoid?"></textarea>
+              </div>
 
               <div class="field-grid">
                 <div>
-                  <label class="label" for="preset-seconds">Target Seconds</label>
-                  <input id="preset-seconds" class="input" type="number" min="1" max="30" step="1" value="3" />
+                  <label class="label" for="gen-width">Width</label>
+                  <input id="gen-width" class="input" type="number" min="256" />
                 </div>
                 <div>
-                  <label class="label" for="preset-quality">Quality</label>
-                  <select id="preset-quality" class="input">
-                    <option value="preview">Preview</option>
-                    <option value="balanced" selected>Balanced</option>
-                    <option value="high">High</option>
-                  </select>
+                  <label class="label" for="gen-height">Height</label>
+                  <input id="gen-height" class="input" type="number" min="256" />
                 </div>
                 <div>
-                  <label class="label">Preset Helper</label>
-                  <button id="apply-generate-preset" class="btn btn-secondary" type="button">Apply Preset</button>
+                  <label class="label" for="gen-frames">Frames</label>
+                  <input id="gen-frames" class="input" type="number" min="1" />
+                </div>
+                <div>
+                  <label class="label" for="gen-fps">FPS</label>
+                  <input id="gen-fps" class="input" type="number" min="1" max="120" />
+                </div>
+                <div id="gen-steps-group">
+                  <label class="label" for="gen-steps">Steps</label>
+                  <input id="gen-steps" class="input" type="number" min="1" />
+                </div>
+                <div id="gen-guidance-group">
+                  <label class="label" for="gen-guidance">Guidance</label>
+                  <input id="gen-guidance" class="input" type="number" min="0" step="0.1" />
+                </div>
+                <div>
+                  <label class="label" for="gen-seed">Seed</label>
+                  <input id="gen-seed" class="input" type="number" step="1" placeholder="Random" />
                 </div>
               </div>
-              <div id="preset-summary" class="hint-inline">Preset helper fills recommended video settings; you can still override them manually.</div>
 
-              <details class="advanced-block">
-                <summary>Advanced Generation Settings</summary>
-                <div class="field-grid advanced-content">
-                  <div>
-                    <label class="label" for="gen-width">Width</label>
-                    <input id="gen-width" class="input" type="number" min="256" step="16" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-height">Height</label>
-                    <input id="gen-height" class="input" type="number" min="256" step="16" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-frames">Frames</label>
-                    <input id="gen-frames" class="input" type="number" min="8" max="241" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-fps">FPS</label>
-                    <input id="gen-fps" class="input" type="number" min="1" max="60" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-steps">Steps</label>
-                    <input id="gen-steps" class="input" type="number" min="1" max="120" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-guidance">Guidance</label>
-                    <input id="gen-guidance" class="input" type="number" min="0" max="20" step="0.1" />
-                  </div>
-                  <div>
-                    <label class="label" for="gen-seed">Seed (optional)</label>
-                    <input id="gen-seed" class="input" type="number" step="1" />
-                  </div>
-                </div>
-              </details>
+              <div id="sampling-note" class="callout muted hidden"></div>
+              <div id="constraint-summary" class="hint-inline"></div>
 
               <div class="row">
                 <button id="submit-generate" class="btn btn-primary" type="button">Queue Video Job</button>
-                <button id="fill-defaults" class="btn btn-secondary" type="button">Load Defaults</button>
+                <button id="fill-defaults" class="btn btn-secondary" type="button">Load Model Defaults</button>
               </div>
               <div id="generate-feedback" class="callout muted">No job submitted yet.</div>
             </div>
