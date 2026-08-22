@@ -71,7 +71,6 @@ def _gguf_pair_path(path: Path) -> Path | None:
         if candidate.exists():
             return candidate
 
-    # Also recognize common descriptive high-noise / low-noise naming.
     swaps = (
         ("high_noise", "low_noise"),
         ("high-noise", "low-noise"),
@@ -141,6 +140,15 @@ def _load_gguf_pipeline(model_path: str, image_to_video: bool, dtype):
 
     mate = _gguf_pair_path(selected)
     role = _gguf_role(selected)
+    if role in {"H", "L"} and mate is None:
+        other = "L" if role == "H" else "H"
+        raise FileNotFoundError(
+            f"Wan GGUF checkpoint '{selected.name}' is the {role} half of a paired A14B checkpoint, "
+            f"but the matching {other} GGUF file is missing. Put both files in the same directory. "
+            "DuckMotion refuses to fall back to the stock transformer_2 because that can trigger an "
+            "unexpected ~57 GB download."
+        )
+
     if role == "L" and mate is not None:
         high_path, low_path = mate, selected
     else:
@@ -169,8 +177,6 @@ def _load_gguf_pipeline(model_path: str, image_to_video: bool, dtype):
         "low_cpu_mem_usage": True,
     }
     if transformer_2 is not None:
-        # Critical for A14B GGUF pairs: supplying both denoisers prevents
-        # from_pretrained() from fetching the enormous stock transformer_2.
         kwargs["transformer_2"] = transformer_2
     try:
         return cls.from_pretrained(base_model_id, dtype=dtype, **kwargs)
@@ -189,7 +195,6 @@ def _load_pipeline(model_path: str, image_to_video: bool, dtype, source_format: 
     try:
         return cls.from_pretrained(model_path, dtype=dtype, **kwargs)
     except TypeError:
-        # Older released Diffusers used torch_dtype while main uses dtype.
         return cls.from_pretrained(model_path, torch_dtype=dtype, **kwargs)
 
 
