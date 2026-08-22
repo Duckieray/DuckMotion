@@ -82,24 +82,42 @@ def _tokens(config: Mapping[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
-def _source_tokens(source: str) -> tuple[str, dict[str, Any]]:
+def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str, Any]]:
     path = Path(source).expanduser()
+    display_name = str(name or "").lower()
     if path.exists() and path.is_dir():
         index = _read_json(path / "model_index.json")
         transformer = _read_json(path / "transformer" / "config.json")
         tokens = " ".join(
-            part for part in (_tokens(index), _tokens(transformer), path.name.lower()) if part
+            part
+            for part in (
+                _tokens(index),
+                _tokens(transformer),
+                display_name,
+                path.name.lower(),
+            )
+            if part
         )
         return tokens, {
             "method": "local_config",
             "confidence": "high" if index or transformer else "medium",
+            "dual_transformer": bool(
+                (path / "transformer_2").exists() or index.get("transformer_2")
+            ),
         }
-    return source.lower(), {"method": "source_name", "confidence": "medium"}
+    return " ".join(part for part in (str(source).lower(), display_name) if part), {
+        "method": "source_name",
+        "confidence": "medium",
+    }
 
 
-def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict[str, Any]]:
-    """Infer model family and currently implemented workflow capabilities."""
-    tokens, detection = _source_tokens(str(source or ""))
+def detect_video_architecture(
+    source: str,
+    *,
+    name: str | None = None,
+) -> tuple[str, VideoCapabilities, dict[str, Any]]:
+    """Infer model family and runnable workflow capabilities."""
+    tokens, detection = _source_tokens(str(source or ""), name=name)
 
     if "ltx-2.5" in tokens or "ltx2.5" in tokens or "ltx25" in tokens or "ltx2" in tokens:
         return (
@@ -112,25 +130,54 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
                 negative_prompt=False,
                 source_image_required=False,
             ),
-            detection,
+            {**detection, "variant": "distilled"},
         )
 
     if "wan" in tokens:
-        is_i2v = "imagetovideo" in tokens or "image-to-video" in tokens or "i2v" in tokens
-        is_t2v = "texttovideo" in tokens or "text-to-video" in tokens or "t2v" in tokens
-        if is_t2v and not is_i2v:
+        is_ti2v = (
+            "ti2v" in tokens
+            or "text-image-to-video" in tokens
+            or "text_image_to_video" in tokens
+        )
+        is_i2v = (
+            is_ti2v
+            or "imagetovideo" in tokens
+            or "image-to-video" in tokens
+            or "image_to_video" in tokens
+            or "i2v" in tokens
+        )
+        is_t2v = (
+            is_ti2v
+            or "texttovideo" in tokens
+            or "text-to-video" in tokens
+            or "text_to_video" in tokens
+            or "t2v" in tokens
+            or "wanpipeline" in tokens
+        )
+
+        if is_ti2v:
+            capabilities = VideoCapabilities(
+                text_to_video=True,
+                image_to_video=True,
+                negative_prompt=True,
+                source_image_required=False,
+            )
+            variant = "ti2v"
+        elif is_t2v and not is_i2v:
             capabilities = VideoCapabilities(
                 text_to_video=True,
                 negative_prompt=True,
                 source_image_required=False,
             )
+            variant = "t2v"
         else:
             capabilities = VideoCapabilities(
                 image_to_video=True,
                 negative_prompt=True,
                 source_image_required=True,
             )
-        return "wan22", capabilities, detection
+            variant = "i2v"
+        return "wan22", capabilities, {**detection, "variant": variant}
 
     return UNKNOWN_ARCHITECTURE, VideoCapabilities(), {
         **detection,
@@ -146,10 +193,10 @@ def backend_for_architecture(architecture: str | None) -> str:
 
 
 def backend_for_model(architecture: str | None, capabilities: VideoCapabilities) -> str:
-    """Choose a backend route from the detected model workflow, not UI input."""
     architecture = (architecture or "").lower()
-    if architecture == "wan22" and not capabilities.image_to_video:
-        # The current migrated Wan adapter implements the proven I2V path only.
+    if architecture == "wan22" and not (
+        capabilities.text_to_video or capabilities.image_to_video
+    ):
         return UNSUPPORTED_BACKEND
     return backend_for_architecture(architecture)
 
@@ -164,13 +211,20 @@ def backend_is_implemented(backend: str | None) -> bool:
 def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
     architecture = (architecture or "").lower()
     if architecture == "ltx25":
+        # DuckMotion's production LTX path is two-stage: final dimensions are
+        # halved for stage 1, so final output dimensions must be multiples of 64.
         return {
-            "dimension_multiple": 32,
+            "dimension_multiple": 64,
             "frame_count_modulo": 8,
             "frame_count_remainder": 1,
+            "generation_stages": 2,
         }
     if architecture == "wan22":
-        return {"dimension_multiple": 16}
+        return {
+            "dimension_multiple": 16,
+            "frame_count_modulo": 4,
+            "frame_count_remainder": 1,
+        }
     return {}
 
 
@@ -178,8 +232,8 @@ def defaults_for_architecture(architecture: str | None) -> dict[str, Any]:
     architecture = (architecture or "").lower()
     if architecture == "ltx25":
         return {
-            "width": 768,
-            "height": 512,
+            "width": 1536,
+            "height": 1024,
             "num_frames": 121,
             "fps": 24,
             "num_inference_steps": 8,
@@ -197,15 +251,37 @@ def defaults_for_architecture(architecture: str | None) -> dict[str, Any]:
     return {}
 
 
+def defaults_for_model(
+    architecture: str | None,
+    name: str,
+    detection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    defaults = defaults_for_architecture(architecture)
+    text = str(name or "").lower()
+    if (architecture or "").lower() == "wan22" and "turbo" in text:
+        defaults.update(
+            {
+                "num_frames": 121,
+                "fps": 24,
+                "num_inference_steps": 4,
+                "guidance_scale": 1.0,
+            }
+        )
+    return defaults
+
+
 def describe_video_model(
     source: str,
     *,
     name: str | None = None,
     defaults: Mapping[str, Any] | None = None,
 ) -> VideoModelDescriptor:
-    architecture, capabilities, detection = detect_video_architecture(source)
     display_name = name or Path(source).name or source
-    effective_defaults = defaults_for_architecture(architecture)
+    architecture, capabilities, detection = detect_video_architecture(
+        source,
+        name=display_name,
+    )
+    effective_defaults = defaults_for_model(architecture, display_name, detection)
     effective_defaults.update(dict(defaults or {}))
     return VideoModelDescriptor(
         name=display_name,
