@@ -60,11 +60,72 @@ def _copy_routes_except(source: APIRouter, target: APIRouter, excluded: set[tupl
         target.routes.append(route)
 
 
+def _picker_item_from_catalog(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Adapt one public model profile to the existing picker row shape.
+
+    This is a presentation compatibility shim only. Architecture/backend IDs
+    remain absent; the current UI receives model capabilities and runnable
+    state while continuing to understand its established ``path``/``label``
+    fields.
+    """
+    source = str(item.get("source") or "").strip()
+    name = str(item.get("name") or source).strip()
+    if not source or not name:
+        return None
+
+    supported = bool(item.get("supported"))
+    label = name if supported else f"{name} — runtime unavailable"
+    location = str(item.get("location") or "catalog").strip() or "catalog"
+    return {
+        "path": source,
+        "label": label,
+        "source": location,
+        "repo_id": item.get("repo_id"),
+        "format": "diffusers",
+        "supported": supported,
+        "capabilities": dict(item.get("capabilities") or {}),
+        "constraints": dict(item.get("constraints") or {}),
+        "defaults": dict(item.get("defaults") or {}),
+    }
+
+
 def _catalog_with_legacy_compat(config: dict[str, Any]) -> dict[str, Any]:
-    """Preserve today's discovery payload while adding the generic catalog."""
+    """Preserve legacy fields while making the generic catalog picker-visible."""
     payload = legacy._discover_local_models(config)
     catalog = discover_video_models(config)
-    payload["catalog_items"] = catalog.get("items", [])
+    catalog_items = list(catalog.get("items") or [])
+
+    legacy_items = list(payload.get("items") or [])
+    seen_sources = {
+        str(row.get("path") or "").strip()
+        for row in legacy_items
+        if isinstance(row, dict) and str(row.get("path") or "").strip()
+    }
+
+    for catalog_item in catalog_items:
+        if not isinstance(catalog_item, dict):
+            continue
+        picker_item = _picker_item_from_catalog(catalog_item)
+        if picker_item is None:
+            continue
+        source = str(picker_item.get("path") or "").strip()
+        if source in seen_sources:
+            # Enrich the existing Wan row with model-driven metadata without
+            # changing the path/label behavior users already rely on.
+            for row in legacy_items:
+                if not isinstance(row, dict) or str(row.get("path") or "").strip() != source:
+                    continue
+                row.setdefault("supported", picker_item["supported"])
+                row.setdefault("capabilities", picker_item["capabilities"])
+                row.setdefault("constraints", picker_item["constraints"])
+                row.setdefault("defaults", picker_item["defaults"])
+                break
+            continue
+        legacy_items.append(picker_item)
+        seen_sources.add(source)
+
+    payload["items"] = legacy_items
+    payload["catalog_items"] = catalog_items
     payload["catalog_count"] = int(catalog.get("count", 0))
     payload["hf_cache"] = catalog.get("hf_cache")
     return payload
