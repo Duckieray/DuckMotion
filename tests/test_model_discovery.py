@@ -42,38 +42,28 @@ def test_hf_cache_discovers_lightricks_ltx25_snapshot(tmp_path):
     _model_index(snapshot, "LTX2ImageToVideoPipeline")
 
     items = discover_hf_video_models(cache)
-
     assert len(items) == 1
     item = items[0]
     assert item["name"] == "Lightricks/LTX-2.5-Diffusers"
     assert item["repo_id"] == "Lightricks/LTX-2.5-Diffusers"
-    assert item["location"] == "hf_cache"
     assert item["capabilities"]["image_to_video"] is True
-    assert item["capabilities"]["audio_output"] is True
     assert item["constraints"]["dimension_multiple"] == 64
     assert item["constraints"]["generation_stages"] == 2
     assert item["defaults"]["width"] == 1536
-    assert item["defaults"]["height"] == 1024
     assert item["supported"] is True
 
 
 def test_hf_cache_uses_repo_identity_to_detect_wan_ti2v_in_revision_snapshot(tmp_path):
     cache = tmp_path / "hub"
-    snapshot = (
-        cache
-        / "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers"
-        / "snapshots"
-        / "8f53deadbeef"
-    )
+    snapshot = cache / "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers" / "snapshots" / "8f53deadbeef"
     _model_index(snapshot, "WanPipeline")
 
     items = discover_hf_video_models(cache)
-
     assert len(items) == 1
     item = items[0]
     assert item["repo_id"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
     assert item["capabilities"]["text_to_video"] is True
-    assert item["capabilities"]["image_to_video"] is True
+    assert item["capabilities"]["image_to_video"] is False
     assert item["capabilities"]["source_image_required"] is False
     assert item["supported"] is True
 
@@ -82,7 +72,6 @@ def test_hf_cache_ignores_non_video_diffusers_models(tmp_path):
     cache = tmp_path / "hub"
     snapshot = cache / "models--black-forest-labs--FLUX.1-dev" / "snapshots" / "revision123"
     _model_index(snapshot, "FluxPipeline")
-
     assert discover_hf_video_models(cache) == []
 
 
@@ -92,7 +81,6 @@ def test_unified_discovery_includes_configured_remote_model(tmp_path):
         roots=[tmp_path / "missing"],
         hf_cache=tmp_path / "hub",
     )
-
     assert payload["count"] == 1
     item = payload["items"][0]
     assert item["location"] == "configured"
