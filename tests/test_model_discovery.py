@@ -36,6 +36,28 @@ def test_local_discovery_finds_wan_and_ltx_without_engine_grouping(tmp_path):
     assert "backend" not in by_name["LTX-2.5-Diffusers"]
 
 
+def test_local_discovery_groups_wan_gguf_h_l_pair_as_one_model(tmp_path):
+    root = tmp_path / "checkpoint" / "wan" / "Wan2.2-Enhanced-NSFW-I2V-T2V"
+    root.mkdir(parents=True)
+    high = root / "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_H.gguf"
+    low = root / "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_L.gguf"
+    high.write_bytes(b"gguf-high")
+    low.write_bytes(b"gguf-low")
+
+    items = discover_local_video_models([tmp_path / "checkpoint"])
+    gguf_items = [item for item in items if str(item["source"]).endswith(".gguf")]
+    assert len(gguf_items) == 1
+    item = gguf_items[0]
+    assert item["source"] == str(high.resolve())
+    assert item["name"] == "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8"
+    assert item["capabilities"]["text_to_video"] is True
+    assert item["capabilities"]["image_to_video"] is True
+    assert item["capabilities"]["source_image_required"] is False
+    assert item["supported"] is True
+    assert "backend" not in item
+    assert "architecture" not in item
+
+
 def test_hf_cache_discovers_lightricks_ltx25_snapshot(tmp_path):
     cache = tmp_path / "hub"
     snapshot = cache / "models--Lightricks--LTX-2.5-Diffusers" / "snapshots" / "revision123"
