@@ -1,0 +1,15 @@
+# Wan Diffusers runtime
+#
+# Install this in a dedicated environment and set DUCKMOTION_WAN_PYTHON to its
+# Python executable. Install a matching PyTorch build separately for the host
+# CUDA stack. Diffusers 0.39.0 includes current WanPipeline and
+# WanImageToVideoPipeline support.
+diffusers>=0.39.0,<0.40
+transformers>=4.57.0
+accelerate>=1.0.0
+safetensors>=0.5.0
+huggingface_hub>=0.36.0
+pillow>=11.0.0
+numpy>=2.0.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.5.1
