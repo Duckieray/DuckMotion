@@ -47,7 +47,7 @@ DuckMotion/
 |- runtime_requirements/
 |  |- wan.txt
 |  `- ltx25.txt
-|- ui/
+|- ui/                      # capability-driven browser workspace
 `- tests/
 ```
 
@@ -163,6 +163,32 @@ The persisted user configuration contains only:
 
 There is no persisted architecture/backend selector.
 
+Hugging Face cache selections persist the canonical repository ID instead of a
+snapshot revision directory. Local models persist their local path. This keeps
+checkpoint-specific identity/defaults stable when a cached snapshot directory is
+named only by a revision hash.
+
+## Capability-Driven UI
+
+The browser workspace consumes the same public model descriptors as the API.
+It does not choose a runtime family.
+
+When the selected model changes, the UI automatically:
+
+- shows or hides source-image staging from `image_to_video`;
+- requires a source image only when `source_image_required` is true;
+- permits text-only generation when `text_to_video` is true;
+- shows negative prompt only when supported;
+- applies checkpoint defaults for dimensions, frames, FPS, steps, and guidance;
+- applies dimension and frame-count constraints from the descriptor;
+- hides arbitrary step/guidance editing when the checkpoint reports a locked
+  sampling schedule;
+- shows synchronized-audio capability in the model profile;
+- disables discovered models whose runtime is unavailable.
+
+Setup no longer stores model-family generation defaults. Those values belong to
+the model descriptor and generation request.
+
 ## Runtime Environment Variables
 
 Generic:
@@ -219,10 +245,10 @@ They do not require clients to understand architecture/backend IDs.
 
 ## Development Status
 
-The runtime/backend architecture is intentionally being completed before the UI
-is rewritten. The current UI may still contain older Wan-shaped presentation
-until the capability-driven UI cutover lands.
+The runtime architecture **and browser UI are now model-driven**. The remaining
+validation milestone is the real hardware smoke matrix rather than another
+architecture/UI compatibility layer.
 
 No full cross-model GPU validation should be inferred from the presence of a
-backend. The planned smoke matrix after the UI/server cutover covers Wan and
-LTX-2.5 alongside WebbDuck's SDXL, FLUX, Krea, and Qwen image backends.
+backend. The planned smoke matrix covers Wan and LTX-2.5 alongside WebbDuck's
+SDXL, FLUX, Krea, and Qwen image backends.
