@@ -9,12 +9,12 @@ from storage_runtime import VideoStorageRuntime, storage_runtime
 
 
 class VideoRuntimeServices:
-    """Compose generic storage with the remaining video-runtime primitives.
+    """Compose generic storage with shared host-runtime primitives.
 
     Persistence, config, input/output paths, gallery, and queue state are owned
-    by ``VideoStorageRuntime``. The implementation module is retained only for
-    runtime profile/GPU integration and the Wan pipeline that has not yet been
-    physically moved out of ``backend.py``.
+    by ``VideoStorageRuntime``. The implementation module remains temporarily
+    responsible only for host runtime-profile and GPU-lease integration while
+    the mature in-process video backend is physically split further.
     """
 
     def __init__(
@@ -73,6 +73,3 @@ class VideoRuntimeServices:
 
     def release_gpu_lease(self, **kwargs: Any) -> Any:
         return self._impl.release_gpu_lease(**kwargs)
-
-    def unload_wan_pipeline(self) -> None:
-        self._impl._unload_pipeline()
