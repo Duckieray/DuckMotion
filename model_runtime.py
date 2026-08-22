@@ -155,8 +155,6 @@ def detect_video_architecture(
         )
 
         if is_ti2v:
-            # Upstream TI2V-5B supports both workflows, but current Diffusers
-            # WanPipeline exposes only text conditioning for this checkpoint.
             capabilities = VideoCapabilities(
                 text_to_video=True,
                 image_to_video=False,
@@ -267,7 +265,6 @@ def defaults_for_model(
     variant = str((detection or {}).get("variant") or "").lower()
 
     if architecture == "wan22" and variant == "ti2v":
-        # Published Wan2.2 TI2V-5B recipe is 720p landscape at 24fps.
         defaults.update(
             {
                 "width": 1280,
@@ -374,6 +371,7 @@ class VideoBackendResolver:
         if not isinstance(payload, dict):
             return {"ready": False, "reason": "Backend returned an invalid readiness payload."}
         return {
+            **payload,
             "ready": bool(payload.get("ready")),
             "reason": payload.get("reason"),
         }
@@ -382,6 +380,7 @@ class VideoBackendResolver:
         return tuple(self._backends.keys())
 
     def unload_all(self) -> None:
+        """Release resources for every installed backend without family branching."""
         errors: list[Exception] = []
         for backend in tuple(self._backends.values()):
             try:
