@@ -145,6 +145,15 @@ def backend_for_architecture(architecture: str | None) -> str:
     }.get((architecture or "").lower(), UNSUPPORTED_BACKEND)
 
 
+def backend_for_model(architecture: str | None, capabilities: VideoCapabilities) -> str:
+    """Choose a backend route from the detected model workflow, not UI input."""
+    architecture = (architecture or "").lower()
+    if architecture == "wan22" and not capabilities.image_to_video:
+        # The current migrated Wan adapter implements the proven I2V path only.
+        return UNSUPPORTED_BACKEND
+    return backend_for_architecture(architecture)
+
+
 _IMPLEMENTED_BACKENDS = {"wan_diffusers", "ltx25_isolated"}
 
 
@@ -202,7 +211,7 @@ def describe_video_model(
         name=display_name,
         source=source,
         architecture=architecture,
-        backend=backend_for_architecture(architecture),
+        backend=backend_for_model(architecture, capabilities),
         capabilities=capabilities,
         defaults=effective_defaults,
         constraints=constraints_for_architecture(architecture),
