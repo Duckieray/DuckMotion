@@ -54,3 +54,13 @@ def test_parameter_normalization_uses_descriptor_constraints_not_family_name():
     assert "wan22" not in source
     assert "ltx25" not in source
     assert "architecture" not in source
+
+
+def test_job_execution_uses_resolver_wide_unload_not_family_specific_service():
+    import inspect
+
+    source = inspect.getsource(VideoJobCoordinator._run)
+    assert "backend_resolver.unload_all()" in source
+    assert "unload_wan" not in source
+    assert "wan22" not in source
+    assert "ltx25" not in source
