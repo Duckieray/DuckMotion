@@ -95,9 +95,10 @@ class VideoJobCoordinator:
             if isinstance(lease, dict):
                 lease_token = str(lease.get("token") or "").strip() or None
 
-            # Ensure a previously loaded backend cannot retain VRAM across a
-            # model switch. Each backend remains responsible for its own unload.
-            self.services.unload_wan_pipeline()
+            # A model switch must not inherit accelerator state from a previous
+            # video runtime. The resolver owns this operation; the coordinator
+            # does not know which backend family held those resources.
+            backend_resolver.unload_all()
 
             row = self.services.get_job(job_id) or row
             if row.get("cancel_requested"):
