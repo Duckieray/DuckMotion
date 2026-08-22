@@ -20,22 +20,23 @@ from ltx_backend import ensure_registered as ensure_ltx_registered
 from model_discovery import discover_video_models
 from model_runtime import backend_resolver, describe_video_model
 from runtime_services import VideoRuntimeServices
+from runtime_surfaces import VideoConfigPayload, VideoRuntimeSurfaces
 from wan_backend import ensure_registered as ensure_wan_registered
 
 
 def _load_wan_implementation():
-    """Load the remaining Wan-specific implementation primitives.
+    """Load the remaining implementation primitives still physically in backend.py.
 
-    backend.py no longer owns DuckMotion's public routing or job orchestration.
-    It is a temporary implementation module until its reusable persistence,
-    gallery and Wan pipeline pieces are physically split into smaller modules.
+    backend.py no longer owns DuckMotion's public routing, job orchestration,
+    model catalog, config, health, or engine status. It is only a temporary
+    implementation source until the remaining utility functions are extracted.
     """
     spec = importlib.util.spec_from_file_location(
         "duckmotion_wan_implementation",
         PLUGIN_ROOT / "backend.py",
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load DuckMotion Wan implementation module.")
+        raise RuntimeError("Unable to load DuckMotion implementation module.")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -49,6 +50,15 @@ job_coordinator = VideoJobCoordinator(services)
 def _register_installed_backends() -> None:
     ensure_wan_registered(wan_impl)
     ensure_ltx_registered()
+
+
+runtime_surfaces = VideoRuntimeSurfaces(
+    services=services,
+    resolver=backend_resolver,
+    describe_model=describe_video_model,
+    discover_models=discover_video_models,
+    register_backends=_register_installed_backends,
+)
 
 
 class GeneratePayload(BaseModel):
@@ -92,21 +102,48 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
         implementation_router,
         router,
         {
+            ("/health", "GET"),
+            ("/config", "GET"),
+            ("/config", "POST"),
             ("/models", "GET"),
             ("/models/discover", "GET"),
+            ("/engine/status", "GET"),
+            ("/engine/unload", "POST"),
             ("/engine/generate", "POST"),
         },
     )
 
+    @router.get("/health")
+    def health() -> dict[str, Any]:
+        return runtime_surfaces.health()
+
+    @router.get("/config")
+    def get_config() -> dict[str, Any]:
+        return runtime_surfaces.get_config()
+
+    @router.post("/config")
+    def set_config(payload: VideoConfigPayload) -> dict[str, Any]:
+        return runtime_surfaces.set_config(payload)
+
     @router.get("/models")
     @router.get("/models/discover")
     def models() -> dict[str, Any]:
-        return discover_video_models(wan_impl._load_config())
+        return discover_video_models(services.load_config())
+
+    @router.get("/engine/status")
+    def engine_status() -> dict[str, Any]:
+        return runtime_surfaces.engine_status()
+
+    @router.post("/engine/unload")
+    def engine_unload() -> dict[str, Any]:
+        return runtime_surfaces.unload()
 
     @router.post("/engine/generate")
     def engine_generate(payload: GeneratePayload) -> dict[str, Any]:
-        config = wan_impl._load_config()
+        config = services.load_config()
         source = str(config.get("model_id_or_path") or "").strip()
+        if not source:
+            raise HTTPException(status_code=422, detail="Select a video model before generation.")
         descriptor = describe_video_model(source)
         if not descriptor.supported:
             raise HTTPException(
@@ -120,8 +157,6 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
 
         _register_installed_backends()
         try:
-            # Resolve before queueing so a descriptor cannot claim runnable
-            # status without an installed backend actually accepting it.
             backend_resolver.resolve(descriptor)
             job = job_coordinator.submit(descriptor, payload.model_dump(), config)
         except (ValueError, LookupError) as exc:
@@ -133,5 +168,5 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
 
 
 def _unload_pipeline() -> None:
-    """Release in-process Wan state before another WebbDuck GPU owner runs."""
-    services.unload_wan_pipeline()
+    """Release all installed DuckMotion runtime resources."""
+    runtime_surfaces.unload()
