@@ -109,8 +109,6 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
                 image_to_video=True,
                 video_to_video=False,
                 audio_output=True,
-                # Distilled LTX-2.5 runs unguided at guidance=1.0; negative
-                # prompting is intentionally not exposed for this first runtime.
                 negative_prompt=False,
                 source_image_required=False,
             ),
@@ -175,7 +173,17 @@ def defaults_for_architecture(architecture: str | None) -> dict[str, Any]:
             "height": 512,
             "num_frames": 121,
             "fps": 24,
+            "num_inference_steps": 8,
             "guidance_scale": 1.0,
+        }
+    if architecture == "wan22":
+        return {
+            "width": 832,
+            "height": 480,
+            "num_frames": 81,
+            "fps": 16,
+            "num_inference_steps": 30,
+            "guidance_scale": 5.0,
         }
     return {}
 
