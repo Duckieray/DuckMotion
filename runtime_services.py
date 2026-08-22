@@ -5,24 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import host_runtime
 from storage_runtime import VideoStorageRuntime, storage_runtime
 
 
 class VideoRuntimeServices:
-    """Compose generic storage with shared host-runtime primitives.
+    """Compose generic storage with WebbDuck host runtime primitives."""
 
-    Persistence, config, input/output paths, gallery, and queue state are owned
-    by ``VideoStorageRuntime``. The implementation module remains temporarily
-    responsible only for host runtime-profile and GPU-lease integration while
-    the mature in-process video backend is physically split further.
-    """
-
-    def __init__(
-        self,
-        implementation: Any,
-        storage: VideoStorageRuntime | None = None,
-    ) -> None:
-        self._impl = implementation
+    def __init__(self, storage: VideoStorageRuntime | None = None) -> None:
         self.storage = storage or storage_runtime
 
     def now(self) -> float:
@@ -53,14 +43,13 @@ class VideoRuntimeServices:
         return self.storage.gallery_item_from_run(run_dir)
 
     def runtime_profile(self) -> dict[str, Any]:
-        return self._impl._get_runtime_profile_or_raise()
+        return host_runtime.runtime_profile_or_raise()
 
     def runtime_profile_safe(self) -> dict[str, Any]:
-        return dict(self._impl._get_runtime_profile_safe())
+        return host_runtime.runtime_profile_safe()
 
     def gpu_lease(self) -> dict[str, Any]:
-        value = self._impl.get_gpu_lease()
-        return dict(value) if isinstance(value, dict) else {"held": False}
+        return host_runtime.gpu_lease()
 
     def queue_snapshot(self) -> dict[str, Any]:
         return self.storage.queue_snapshot()
@@ -69,7 +58,7 @@ class VideoRuntimeServices:
         return self.storage.output_writable(config)
 
     def acquire_gpu_lease(self, **kwargs: Any) -> dict[str, Any]:
-        return self._impl.acquire_gpu_lease_blocking(**kwargs)
+        return host_runtime.acquire_gpu_lease(**kwargs)
 
     def release_gpu_lease(self, **kwargs: Any) -> Any:
-        return self._impl.release_gpu_lease(**kwargs)
+        return host_runtime.release_gpu_lease(**kwargs)
