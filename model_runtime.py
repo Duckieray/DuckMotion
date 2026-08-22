@@ -43,7 +43,6 @@ class VideoModelDescriptor:
 
     @property
     def supported(self) -> bool:
-        """Whether this model is runnable in the current DuckMotion build."""
         return backend_is_implemented(self.backend) and (
             self.capabilities.text_to_video or self.capabilities.image_to_video
         )
@@ -54,7 +53,6 @@ class VideoModelDescriptor:
         return value
 
     def to_public_dict(self) -> dict[str, Any]:
-        """Return the model-driven contract the UI actually needs."""
         return {
             "name": self.name,
             "source": self.source,
@@ -100,7 +98,7 @@ def _source_tokens(source: str) -> tuple[str, dict[str, Any]]:
 
 
 def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict[str, Any]]:
-    """Infer model family and workflow capabilities from a selected model source."""
+    """Infer model family and currently implemented workflow capabilities."""
     tokens, detection = _source_tokens(str(source or ""))
 
     if "ltx-2.5" in tokens or "ltx2.5" in tokens or "ltx25" in tokens or "ltx2" in tokens:
@@ -109,9 +107,11 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
             VideoCapabilities(
                 text_to_video=True,
                 image_to_video=True,
-                video_to_video=True,
+                video_to_video=False,
                 audio_output=True,
-                negative_prompt=True,
+                # Distilled LTX-2.5 runs unguided at guidance=1.0; negative
+                # prompting is intentionally not exposed for this first runtime.
+                negative_prompt=False,
                 source_image_required=False,
             ),
             detection,
@@ -143,15 +143,11 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
 def backend_for_architecture(architecture: str | None) -> str:
     return {
         "wan22": "wan_diffusers",
-        # LTX starts isolated so newer runtime requirements cannot destabilize
-        # the working Wan/WebbDuck environment.
         "ltx25": "ltx25_isolated",
     }.get((architecture or "").lower(), UNSUPPORTED_BACKEND)
 
 
-# Discovery may know how a future model should run before that adapter exists.
-# Only backends actually connected to live execution belong here.
-_IMPLEMENTED_BACKENDS = {"wan_diffusers"}
+_IMPLEMENTED_BACKENDS = {"wan_diffusers", "ltx25_isolated"}
 
 
 def backend_is_implemented(backend: str | None) -> bool:
@@ -171,6 +167,19 @@ def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
     return {}
 
 
+def defaults_for_architecture(architecture: str | None) -> dict[str, Any]:
+    architecture = (architecture or "").lower()
+    if architecture == "ltx25":
+        return {
+            "width": 768,
+            "height": 512,
+            "num_frames": 121,
+            "fps": 24,
+            "guidance_scale": 1.0,
+        }
+    return {}
+
+
 def describe_video_model(
     source: str,
     *,
@@ -179,13 +188,15 @@ def describe_video_model(
 ) -> VideoModelDescriptor:
     architecture, capabilities, detection = detect_video_architecture(source)
     display_name = name or Path(source).name or source
+    effective_defaults = defaults_for_architecture(architecture)
+    effective_defaults.update(dict(defaults or {}))
     return VideoModelDescriptor(
         name=display_name,
         source=source,
         architecture=architecture,
         backend=backend_for_architecture(architecture),
         capabilities=capabilities,
-        defaults=dict(defaults or {}),
+        defaults=effective_defaults,
         constraints=constraints_for_architecture(architecture),
         detection=detection,
     )
