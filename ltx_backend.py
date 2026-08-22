@@ -26,9 +26,10 @@ class LTX25IsolatedBackend(VideoBackend):
         request: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        output_dir = Path(str(kwargs.get("output_dir") or "")).expanduser()
-        if not str(output_dir):
+        output_dir_raw = str(kwargs.get("output_dir") or "").strip()
+        if not output_dir_raw:
             raise ValueError("LTX output_dir is required")
+        output_dir = Path(output_dir_raw).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         is_cancelled: Callable[[], bool] | None = kwargs.get("is_cancelled")
@@ -55,29 +56,31 @@ class LTX25IsolatedBackend(VideoBackend):
             tmp = Path(tmp_raw)
             request_path = tmp / "request.json"
             result_path = tmp / "result.json"
+            log_path = tmp / "worker.log"
             request_path.write_text(json.dumps(payload), encoding="utf-8")
 
-            proc = subprocess.Popen(
-                [python_exe, str(worker), "--request", str(request_path), "--result", str(result_path), "--output-dir", str(output_dir)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            started = time.monotonic()
-            while proc.poll() is None:
-                if is_cancelled is not None and is_cancelled():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
+            with log_path.open("w", encoding="utf-8") as log_file:
+                proc = subprocess.Popen(
+                    [python_exe, str(worker), "--request", str(request_path), "--result", str(result_path), "--output-dir", str(output_dir)],
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                started = time.monotonic()
+                while proc.poll() is None:
+                    if is_cancelled is not None and is_cancelled():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise RuntimeError("LTX generation cancelled")
+                    if time.monotonic() - started > timeout_seconds:
                         proc.kill()
-                    raise RuntimeError("LTX generation cancelled")
-                if time.monotonic() - started > timeout_seconds:
-                    proc.kill()
-                    raise RuntimeError(f"LTX runtime timed out after {int(timeout_seconds)} seconds")
-                time.sleep(0.5)
+                        raise RuntimeError(f"LTX runtime timed out after {int(timeout_seconds)} seconds")
+                    time.sleep(0.5)
 
-            logs = proc.stdout.read().splitlines()[-80:] if proc.stdout is not None else []
+            logs = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
             if not result_path.exists():
                 raise RuntimeError(
                     f"LTX runtime exited without a result (code {proc.returncode}).\n" + "\n".join(logs[-20:])
