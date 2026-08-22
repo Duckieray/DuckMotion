@@ -91,12 +91,24 @@ Generic modules must not import Wan/LTX Diffusers pipeline classes.
 - Preserve explicit seed `0`.
 - Model-specific schedules/defaults belong to descriptors or workers, not UI engine presets.
 - Backend resource cleanup must remain resolver-driven, not family-driven.
+- Public capabilities describe what the currently installed backend can run, not merely everything an upstream checkpoint might support in theory.
 
 ## Wan Runtime
 
-The current isolated Wan backend supports model descriptors advertising T2V,
-I2V, or both (TI2V). A pure I2V model requires a source image; TI2V models do
-not make image input globally mandatory.
+The current isolated Diffusers backend supports pure Wan T2V and pure Wan I2V
+checkpoints. A pure I2V model requires a source image.
+
+`Wan2.2-TI2V-5B` is a special case: the upstream checkpoint supports T2V and
+I2V, but current Diffusers `WanPipeline` exposes only its text-conditioned path.
+Until DuckMotion gains a native/unified TI2V image-conditioning runtime, its
+public descriptor must expose `text_to_video=true` and `image_to_video=false`.
+Internal detection metadata may record the upstream I2V capability so it can be
+enabled later without rediscovering the model family. Do not offer a source-image
+workflow that the selected backend cannot execute.
+
+TI2V-5B also has checkpoint-specific published defaults: 1280x704 landscape,
+121 frames, 24 fps, 50 steps, and guidance 5.0. Turbo variants may override the
+step/guidance defaults while retaining model-specific size/frame defaults.
 
 Wan memory policy belongs in `wan_worker.py`. On constrained GPUs, use Diffusers
 offload APIs rather than adding runtime selectors to the UI. Very large A14B
@@ -112,9 +124,11 @@ The production path is the reference distilled two-stage flow:
 3. full-resolution stage-2 refinement using the stage-2 distilled sigma schedule;
 4. synchronized audio/video encoding.
 
-Final dimensions are multiples of 64 and frame count follows `8k+1`. Do not
-replace the explicit distilled sigma schedules with a generic arbitrary-step
-schedule unless upstream model behavior explicitly changes.
+Final dimensions are multiples of 64 and frame count follows `8k+1`. The
+checkpoint's explicit sigma schedules are model semantics and the public
+constraint marks the sampling schedule locked. Do not replace those schedules
+with a generic arbitrary-step workflow unless upstream model behavior explicitly
+changes.
 
 LTX currently tracks Diffusers main in its isolated environment. Do not upgrade
 WebbDuck globally for LTX.
