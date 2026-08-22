@@ -72,6 +72,14 @@
   display: none !important;
 }
 
+.status-dot.ready {
+  background: var(--ok);
+}
+
+.status-dot.warning {
+  background: var(--warn);
+}
+
 #source-panel.source-required #source-requirement {
   font-weight: 600;
 }
