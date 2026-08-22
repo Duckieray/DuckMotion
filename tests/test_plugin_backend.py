@@ -43,6 +43,48 @@ def test_router_is_composed_from_generic_runtime_and_storage_surfaces(monkeypatc
     assert payload["items"][0]["supported"] is True
 
 
+def test_runtime_readiness_lists_discovered_models_without_loading_weights(monkeypatch):
+    monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {})
+    monkeypatch.setattr(plugin_backend, "_register_installed_backends", lambda: None)
+    monkeypatch.setattr(plugin_backend, "discover_video_models", lambda _config: {
+        "items": [
+            {
+                "name": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+                "source": "/cache/wan/revision",
+                "repo_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+                "location": "hf_cache",
+            },
+            {
+                "name": "Lightricks/LTX-2.5-Diffusers",
+                "source": "/cache/ltx/revision",
+                "repo_id": "Lightricks/LTX-2.5-Diffusers",
+                "location": "hf_cache",
+            },
+        ],
+        "count": 2,
+        "hf_cache": "/cache/hub",
+    })
+    monkeypatch.setattr(
+        plugin_backend.backend_resolver,
+        "readiness",
+        lambda descriptor: {
+            "ready": True,
+            "reason": None,
+            "cuda_available": True,
+            "gpu_name": "NVIDIA GeForce RTX 5070 Ti",
+            "runtime_model": descriptor.name,
+        },
+    )
+
+    payload = _endpoint(plugin_backend.get_router(), "/runtime-readiness", "GET")()
+    assert payload["count"] == 2
+    assert payload["items"][0]["runtime"]["gpu_name"] == "NVIDIA GeForce RTX 5070 Ti"
+    assert payload["items"][0]["capabilities"]["text_to_video"] is True
+    assert payload["items"][1]["capabilities"]["audio_output"] is True
+    assert "architecture" not in payload["items"][0]
+    assert "backend" not in payload["items"][0]
+
+
 def _exercise_generate(monkeypatch, model_source, payload):
     monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {"model_id_or_path": model_source})
     monkeypatch.setattr(plugin_backend, "_register_installed_backends", lambda: None)
