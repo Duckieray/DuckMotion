@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
+from runtime_probe import probe_python_runtime
 
 
 class WanDiffusersBackend(VideoBackend):
@@ -46,28 +47,15 @@ class WanDiffusersBackend(VideoBackend):
         ):
             return dict(self._readiness_payload)
 
-        probe = (
-            "import torch; "
-            "from diffusers import WanImageToVideoPipeline, WanPipeline; "
-            "from diffusers.utils import export_to_video, load_image"
+        payload = probe_python_runtime(
+            python_exe,
+            (
+                ("diffusers", "WanPipeline"),
+                ("diffusers", "WanImageToVideoPipeline"),
+                ("diffusers.utils", "export_to_video"),
+                ("diffusers.utils", "load_image"),
+            ),
         )
-        try:
-            completed = subprocess.run(
-                [python_exe, "-c", probe],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if completed.returncode == 0:
-                payload = {"ready": True, "reason": None}
-            else:
-                detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-                reason = detail[-1] if detail else f"Runtime probe exited with code {completed.returncode}."
-                payload = {"ready": False, "reason": f"Wan runtime dependencies unavailable: {reason}"}
-        except Exception as exc:
-            payload = {"ready": False, "reason": f"Unable to probe Wan runtime: {exc}"}
-
         self._readiness_checked_at = now
         self._readiness_python = python_exe
         self._readiness_payload = dict(payload)
@@ -185,7 +173,6 @@ class WanDiffusersBackend(VideoBackend):
             return result
 
     def unload(self) -> None:
-        # Wan is process-isolated; worker exit releases its model resources.
         return None
 
 
