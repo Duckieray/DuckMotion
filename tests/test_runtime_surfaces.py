@@ -6,6 +6,7 @@ from pathlib import Path
 from model_runtime import VideoBackend, VideoBackendResolver, describe_video_model
 from runtime_services import VideoRuntimeServices
 from runtime_surfaces import VideoConfigPayload, VideoRuntimeSurfaces
+from storage_runtime import VideoStorageRuntime
 
 
 class _Backend(VideoBackend):
@@ -131,24 +132,15 @@ def test_engine_status_contains_generic_runtime_state(tmp_path):
     assert "backend" not in status["selected_model"]
 
 
-class _Implementation:
-    def __init__(self, config_file: Path):
-        self.CONFIG_FILE = config_file
-
-    def _default_config(self):
-        return {
-            "model_id_or_path": "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
-            "models_dir": "/cache/hub",
-            "output_dir": "",
-            "runtime_backend": "auto",
-            "memory_policy": "auto",
-        }
-
-
 def test_runtime_services_does_not_implicitly_select_wan_and_persists_generic_fields(tmp_path, monkeypatch):
     monkeypatch.delenv("DUCKMOTION_MODEL_ID_OR_PATH", raising=False)
-    implementation = _Implementation(tmp_path / "duckmotion_config.json")
-    services = VideoRuntimeServices(implementation)
+    storage = VideoStorageRuntime(
+        config_file=tmp_path / "duckmotion_config.json",
+        jobs_file=tmp_path / "jobs.json",
+        staging_dir=tmp_path / "staging",
+        default_output_dir=tmp_path / "videos",
+    )
+    services = VideoRuntimeServices(storage=storage)
 
     loaded = services.load_config()
     assert loaded["model_id_or_path"] == ""
@@ -159,9 +151,18 @@ def test_runtime_services_does_not_implicitly_select_wan_and_persists_generic_fi
     loaded["runtime_backend"] = "internal-only"
     services.save_config(loaded)
 
-    saved = json.loads(implementation.CONFIG_FILE.read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / "duckmotion_config.json").read_text(encoding="utf-8"))
     assert saved == {
         "model_id_or_path": "Lightricks/LTX-2.5-Diffusers",
         "models_dir": "/models",
         "output_dir": "/videos",
     }
+
+
+def test_runtime_services_has_no_backend_implementation_object():
+    import inspect
+
+    source = inspect.getsource(VideoRuntimeServices)
+    assert "implementation" not in source.lower()
+    assert "_impl" not in source
+    assert "wan" not in source.lower()

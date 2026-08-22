@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 import sys
 from typing import Any
@@ -26,31 +25,12 @@ from wan_backend import ensure_registered as ensure_wan_registered
 from webbduck_media import recent_webbduck_images
 
 
-def _load_wan_implementation():
-    """Load only the remaining in-process Wan/runtime implementation primitives.
-
-    The legacy backend router is never constructed. This prevents its worker
-    queue from starting and makes the public plugin composition independent of
-    the old Wan-shaped route table.
-    """
-    spec = importlib.util.spec_from_file_location(
-        "duckmotion_wan_implementation",
-        PLUGIN_ROOT / "backend.py",
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load DuckMotion Wan implementation module.")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-wan_impl = _load_wan_implementation()
-services = VideoRuntimeServices(wan_impl)
+services = VideoRuntimeServices()
 job_coordinator = VideoJobCoordinator(services)
 
 
 def _register_installed_backends() -> None:
-    ensure_wan_registered(wan_impl)
+    ensure_wan_registered()
     ensure_ltx_registered()
 
 

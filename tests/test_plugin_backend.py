@@ -1,50 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+import inspect
 
 import plugin_backend
-
-
-def _fake_implementation_router():
-    router = APIRouter()
-
-    @router.get("/models/discover")
-    def old_discovery():
-        return {"items": [{"path": "/wan"}]}
-
-    @router.post("/engine/generate")
-    def old_generate(payload):
-        return {"legacy": True}
-
-    @router.get("/health")
-    def old_health():
-        return {"legacy_health": True}
-
-    @router.get("/config")
-    def old_config():
-        return {"runtime_backend": "wan"}
-
-    @router.get("/engine/status")
-    def old_status():
-        return {"pipeline": "WanImageToVideoPipeline"}
-
-    @router.post("/engine/unload")
-    def old_unload():
-        return {"legacy_unload": True}
-
-    @router.get("/engine/jobs")
-    def old_jobs():
-        return {"legacy_jobs": True}
-
-    @router.get("/gallery")
-    def old_gallery():
-        return {"legacy_gallery": True}
-
-    @router.get("/staging")
-    def old_staging():
-        return {"legacy_staging": True}
-
-    return router
 
 
 def _endpoint(router, path, method):
@@ -57,8 +15,7 @@ def _endpoint(router, path, method):
     raise AssertionError(f"Missing route {method} {path}")
 
 
-def test_router_replaces_model_config_health_status_and_storage_surfaces(monkeypatch):
-    monkeypatch.setattr(plugin_backend.wan_impl, "get_router", lambda _manifest=None: _fake_implementation_router())
+def test_router_is_composed_from_generic_runtime_and_storage_surfaces(monkeypatch):
     monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {})
     monkeypatch.setattr(plugin_backend.runtime_surfaces, "health", lambda: {"mode": "model-driven-local-runtime"})
     monkeypatch.setattr(plugin_backend.runtime_surfaces, "get_config", lambda: {"config": {"model_id_or_path": ""}})
@@ -68,14 +25,7 @@ def test_router_replaces_model_config_health_status_and_storage_surfaces(monkeyp
     monkeypatch.setattr(plugin_backend.services.storage, "list_staging", lambda limit=100: [{"name": "input.png"}])
     monkeypatch.setattr(plugin_backend.services.storage, "scan_gallery", lambda config, limit=100: [{"run_id": "generic-run"}])
     monkeypatch.setattr(plugin_backend, "discover_video_models", lambda _config: {
-        "items": [
-            {
-                "name": "LTX-2.5",
-                "source": "/cache/ltx",
-                "supported": True,
-                "capabilities": {"text_to_video": True, "image_to_video": True, "audio_output": True},
-            }
-        ],
+        "items": [{"name": "LTX-2.5", "source": "/cache/ltx", "supported": True, "capabilities": {"text_to_video": True, "image_to_video": True, "audio_output": True}}],
         "count": 1,
         "hf_cache": "/cache/hub",
     })
@@ -88,18 +38,14 @@ def test_router_replaces_model_config_health_status_and_storage_surfaces(monkeyp
     assert _endpoint(router, "/engine/jobs", "GET")()["jobs"][0]["job_id"] == "dm_generic"
     assert _endpoint(router, "/staging", "GET")()["items"][0]["name"] == "input.png"
     assert _endpoint(router, "/gallery", "GET")()["items"][0]["run_id"] == "generic-run"
-
     payload = _endpoint(router, "/models", "GET")()
     assert payload["items"][0]["name"] == "LTX-2.5"
     assert payload["items"][0]["supported"] is True
-    assert callable(_endpoint(router, "/models/discover", "GET"))
 
 
 def _exercise_generate(monkeypatch, model_source, payload):
-    monkeypatch.setattr(plugin_backend.wan_impl, "get_router", lambda _manifest=None: _fake_implementation_router())
     monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {"model_id_or_path": model_source})
     monkeypatch.setattr(plugin_backend, "_register_installed_backends", lambda: None)
-
     submitted = {}
 
     class FakeRuntime:
@@ -114,43 +60,37 @@ def _exercise_generate(monkeypatch, model_source, payload):
         return {"job_id": "dm_generic", "status": "queued"}
 
     monkeypatch.setattr(plugin_backend.job_coordinator, "submit", fake_submit)
-    router = plugin_backend.get_router()
-    result = _endpoint(router, "/engine/generate", "POST")(payload)
+    result = _endpoint(plugin_backend.get_router(), "/engine/generate", "POST")(payload)
     return result, submitted
 
 
 def test_ltx_text_to_video_uses_generic_job_coordinator(monkeypatch):
-    result, submitted = _exercise_generate(
-        monkeypatch,
-        "Lightricks/LTX-2.5-Diffusers",
-        plugin_backend.GeneratePayload(prompt="cinematic red fox"),
-    )
+    result, submitted = _exercise_generate(monkeypatch, "Lightricks/LTX-2.5-Diffusers", plugin_backend.GeneratePayload(prompt="cinematic red fox"))
     assert result["ok"] is True
-    assert result["job"]["job_id"] == "dm_generic"
     assert submitted["request"]["image_path"] is None
     assert submitted["descriptor"].backend == "ltx25_isolated"
     assert submitted["descriptor"].capabilities.audio_output is True
 
 
-def test_wan_uses_same_generic_job_coordinator(monkeypatch):
-    result, submitted = _exercise_generate(
-        monkeypatch,
-        "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
-        plugin_backend.GeneratePayload(image_path="/tmp/source.png", prompt="move"),
-    )
+def test_wan_i2v_uses_same_generic_job_coordinator(monkeypatch):
+    result, submitted = _exercise_generate(monkeypatch, "Wan-AI/Wan2.2-I2V-A14B-Diffusers", plugin_backend.GeneratePayload(image_path="/tmp/source.png", prompt="move"))
     assert result["ok"] is True
-    assert result["job"]["job_id"] == "dm_generic"
     assert submitted["descriptor"].backend == "wan_diffusers"
     assert submitted["request"]["image_path"] == "/tmp/source.png"
 
 
-def test_route_contains_no_backend_family_dispatch_or_legacy_storage_calls():
-    import inspect
+def test_wan_ti2v_diffusers_can_submit_text_only_without_source_image(monkeypatch):
+    result, submitted = _exercise_generate(monkeypatch, "Wan-AI/Wan2.2-TI2V-5B-Diffusers", plugin_backend.GeneratePayload(prompt="a cinematic rainy city"))
+    assert result["ok"] is True
+    assert submitted["descriptor"].capabilities.text_to_video is True
+    assert submitted["descriptor"].capabilities.image_to_video is False
+    assert submitted["request"]["image_path"] is None
 
-    source = inspect.getsource(plugin_backend.get_router)
+
+def test_plugin_has_no_legacy_backend_or_family_dispatch():
+    source = inspect.getsource(plugin_backend)
+    assert "wan_impl" not in source
+    assert "importlib" not in source
+    assert "backend.py" not in source
     assert 'descriptor.backend == "ltx' not in source
     assert 'descriptor.backend == "wan' not in source
-    assert "wan_impl._load_config" not in source
-    assert "wan_impl._get_job" not in source
-    assert "wan_impl._scan_gallery" not in source
-    assert "wan_impl._resolve_input_image" not in source

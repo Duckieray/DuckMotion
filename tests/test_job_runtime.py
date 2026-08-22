@@ -11,20 +11,22 @@ class _Services:
         return Path(path)
 
 
-def test_ltx_params_use_model_constraints_and_defaults():
+def test_ltx_params_use_two_stage_final_output_constraints_and_defaults():
     coordinator = VideoJobCoordinator(_Services())
     descriptor = describe_video_model("Lightricks/LTX-2.5-Diffusers")
     params = coordinator._normalize_params(
         descriptor,
         {
             "prompt": "test",
-            "width": 777,
-            "height": 530,
+            "width": 1555,
+            "height": 1050,
             "num_frames": 120,
         },
     )
-    assert params["width"] % 32 == 0
-    assert params["height"] % 32 == 0
+    assert params["width"] % 64 == 0
+    assert params["height"] % 64 == 0
+    assert params["width"] == 1536
+    assert params["height"] == 1024
     assert params["num_frames"] % 8 == 1
     assert params["fps"] == 24
     assert params["guidance_scale"] == 1.0
@@ -41,6 +43,7 @@ def test_wan_params_use_model_defaults_without_wan_specific_coordinator_code():
     assert params["width"] == 832
     assert params["height"] == 480
     assert params["num_frames"] == 81
+    assert params["num_frames"] % 4 == 1
     assert params["fps"] == 16
     assert params["num_inference_steps"] == 30
     assert params["guidance_scale"] == 5.0

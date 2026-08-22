@@ -1,41 +1,59 @@
 # DuckMotion
 
-DuckMotion is a separately managed WebbDuck web plugin that adds a local Wan2.2 image-to-video workspace using a diffusers runtime.
+DuckMotion is WebbDuck's local, model-driven video generation plugin. The user
+selects a model; DuckMotion discovers its capabilities and routes generation to
+a compatible runtime without exposing architecture or backend choices in the
+normal workflow.
 
-## Current Status
+Current runnable video workflows:
 
-- Local DuckMotion job queue + worker
-- WebbDuck-compatible runtime profile reuse (`device` / `dtype` selection)
-- Image staging (upload or copy from WebbDuck outputs)
-- Configurable output directory with plugin-local video gallery
-- Wan2.2 I2V generation path via `diffusers.WanImageToVideoPipeline` (requires compatible diffusers build)
+- Wan 2.2 pure text-to-video checkpoints through an isolated Diffusers runtime.
+- Wan 2.2 pure image-to-video checkpoints through the same isolated runtime.
+- Wan 2.2 TI2V-5B text-to-video through Diffusers. The upstream checkpoint also
+  supports image-to-video, but current Diffusers does not expose that TI2V image
+  path, so DuckMotion intentionally does not advertise it yet.
+- LTX-2.5 text-to-video and image-to-video with synchronized audio through an
+  isolated two-stage Diffusers runtime.
 
-## Architecture Roadmap
+## Design Rules
 
-The current implementation is Wan2.2-specific, but DuckMotion's target architecture is **model-driven rather than Wan-first**. The user should select a video model; DuckMotion should automatically identify its architecture, choose a compatible runtime backend, apply model-specific defaults and constraints, and expose only the source/input/output capabilities that model supports.
+- The model/checkpoint is the user-facing selection.
+- Architecture and backend IDs are internal routing metadata.
+- Inputs and controls come from model capabilities, defaults, and constraints.
+- A model is only marked runnable when an installed backend owns its workflow.
+- Model runtimes are process-isolated from WebbDuck and from each other.
+- DuckMotion's host environment does not install Wan/LTX Diffusers stacks.
 
-The normal workflow must not require a Wan/LTX/architecture/engine selector. Architecture and backend details are internal implementation metadata and may be surfaced only for diagnostics.
+See `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` and `AGENTS.md` before changing
+runtime or discovery behavior.
 
-Read `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` before implementing LTX-2.5 or another video architecture. Contributors and coding agents should also read `AGENTS.md`.
-
-## Repo Layout
+## Layout
 
 ```text
 DuckMotion/
-|- AGENTS.md
-|- plugin.json
-|- backend.py
-|- docs/
-|  `- MODEL_DRIVEN_VIDEO_ARCHITECTURE.md
-|- tools/
-|  `- install_webbduck_plugin.py
-`- ui/
-   |- index.html
-   |- app.js
-   `- styles.css
+|- plugin_backend.py        # model-driven FastAPI composition root
+|- model_runtime.py         # descriptors, capabilities, backend resolver
+|- model_discovery.py       # local + Hugging Face cache discovery
+|- job_runtime.py           # architecture-neutral job coordinator
+|- host_runtime.py          # WebbDuck runtime + GPU lease bridge
+|- runtime_services.py      # host/storage composition
+|- runtime_surfaces.py      # health/config/status surfaces
+|- storage_runtime.py       # config/jobs/staging/gallery persistence
+|- storage_api.py
+|- wan_backend.py           # isolated Wan adapter
+|- wan_worker.py            # Wan-only Diffusers process
+|- ltx_backend.py           # isolated LTX-2.5 adapter
+|- ltx_worker.py            # LTX-only two-stage Diffusers process
+|- runtime_requirements/
+|  |- wan.txt
+|  `- ltx25.txt
+|- ui/
+`- tests/
 ```
 
-## Install Into WebbDuck
+The former monolithic `backend.py` has been removed.
+
+## Installation Into WebbDuck
 
 WebbDuck discovers web plugins under:
 
@@ -43,191 +61,168 @@ WebbDuck discovers web plugins under:
 <plugins-root>/webapps/<plugin-id>/
 ```
 
-Install DuckMotion into `webapps/duckmotion` by copy/symlink, or use the installer script:
+Install by copy/symlink, or use:
 
 ```bash
 python3 tools/install_webbduck_plugin.py --webbduck-dir /path/to/webbduck --overwrite
 ```
 
-Or install into a shared user plugin root:
+A shared user plugin root also works:
 
 ```bash
 python3 tools/install_webbduck_plugin.py --plugins-dir ~/.webbduck/plugins --overwrite
 ```
 
-## Install Runtime Dependencies (Same Environment as WebbDuck)
+DuckMotion's top-level `requirements.txt` intentionally contains no video model
+engine. WebbDuck supplies the plugin-host web/runtime dependencies.
 
-DuckMotion runs inside the WebbDuck process, so install DuckMotion requirements into the same Python environment you use for WebbDuck.
+## Isolated Runtime Environments
 
-After installing WebbDuck's own requirements, install DuckMotion extras:
+### Wan
 
-```bash
-pip install -r requirements.txt
-```
-
-If your installed `diffusers` build does not include `WanImageToVideoPipeline`, install a newer version (or source build) and re-run the DuckMotion health check.
-
-## Quick Start Model Example (Wan2.2 Diffusers Base)
-
-DuckMotion's current runtime uses the **diffusers Wan2.2 model repo**, not the older GGUF pair/VAE setup.
-
-Recommended model:
-
-- `Wan-AI/Wan2.2-I2V-A14B-Diffusers`
-
-Install/download it like a standard Hugging Face model:
+Create a dedicated Python environment using:
 
 ```bash
-pip install -U "huggingface_hub[cli]"
-huggingface-cli login
-huggingface-cli download Wan-AI/Wan2.2-I2V-A14B-Diffusers --local-dir /path/to/Wan2.2-I2V-A14B-Diffusers
+pip install -r runtime_requirements/wan.txt
 ```
 
-Recommended local folder convention (keeps Wan models organized next to WebbDuck checkpoints without mixing them with SDXL):
-
-```text
-webbduck/checkpoint/wan/Wan2.2-I2V-A14B-Diffusers/
-```
-
-Examples:
-
-- Windows: `C:\Users\<you>\path\to\webbduck\checkpoint\wan\Wan2.2-I2V-A14B-Diffusers`
-- WSL/Linux: `/path/to/webbduck/checkpoint/wan/Wan2.2-I2V-A14B-Diffusers`
-
-Example download directly into that folder:
+Install the PyTorch build appropriate for the host CUDA stack, then point
+DuckMotion at that interpreter:
 
 ```bash
-huggingface-cli download Wan-AI/Wan2.2-I2V-A14B-Diffusers --local-dir /path/to/webbduck/checkpoint/wan/Wan2.2-I2V-A14B-Diffusers
+export DUCKMOTION_WAN_PYTHON=/path/to/wan-env/bin/python
 ```
 
-In DuckMotion Setup, local models are auto-discovered and listed in the model selector.
-Discovery scans:
+The current Wan runtime uses Diffusers `WanPipeline` and
+`WanImageToVideoPipeline`.
 
-- `webbduck/checkpoint/wan` and `webbduck/checkpoints/wan`
-- WebbDuck models-root override paths when `WEBBDUCK_MODELS_DIR` is set (for example `<models>/checkpoint/wan` or `<models>/checkpoints/wan`)
-- DuckMotion `Models Cache Dir` (if configured)
-- Hugging Face cache roots (`HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE` / default cache path)
+- Pure T2V checkpoints run through `WanPipeline`.
+- Pure I2V checkpoints run through `WanImageToVideoPipeline` and require a
+  source image.
+- `Wan-AI/Wan2.2-TI2V-5B-Diffusers` is recognized as a TI2V checkpoint, but the
+  current Diffusers integration exposes its text-conditioned path only. Its
+  descriptor records that upstream I2V capability internally while keeping the
+  public/runnable `image_to_video` capability false until a runtime actually
+  implements it.
 
-Default behavior is zero-config friendly:
+On a 16 GB GPU, automatic memory policy prefers group offloading and falls back
+to sequential CPU offload when necessary. Very large local checkpoints can use
+Diffusers disk-backed group offload when host RAM is insufficient. This makes
+loading safer, but it does not make enormous BF16 checkpoints fast or guarantee
+that every A14B package is practical on a given host.
 
-- If a local Wan model is found in `checkpoint/wan`, DuckMotion auto-selects it.
-- If not, DuckMotion falls back to `Wan-AI/Wan2.2-I2V-A14B-Diffusers`.
-- Outputs go under WebbDuck outputs by default (`outputs/duckmotion_videos`).
+### LTX-2.5
 
-You can then use either:
+Create a separate environment using:
 
-1. `Wan-AI/Wan2.2-I2V-A14B-Diffusers` in DuckMotion Setup (auto-download on first run), or
-2. `/path/to/Wan2.2-I2V-A14B-Diffusers` in DuckMotion Setup (local path from the `huggingface-cli download` command)
-
-Note:
-
-- You do **not** need to separately download a GGUF high/low pair or a standalone VAE for the current diffusers runtime path.
-
-## Configuration
-
-DuckMotion stores plugin state under:
-
-```text
-~/.webbduck/plugin_state/
+```bash
+pip install -r runtime_requirements/ltx25.txt
 ```
 
-Optional environment variables:
+Then set:
 
-- `DUCKMOTION_MODEL_ID_OR_PATH` (or `DUCKMOTION_MODEL_ID`)
-- `DUCKMOTION_MODELS_DIR` (optional cache/model dir)
-- `DUCKMOTION_OUTPUT_DIR` (plugin video outputs)
-- `DUCKMOTION_RUNTIME_BACKEND` (`auto` default, internal backend selector)
-- `DUCKMOTION_GGUF_TRANSFORMER_PATH` (optional explicit Wan GGUF transformer file)
-- `DUCKMOTION_DEFAULT_WIDTH`
-- `DUCKMOTION_DEFAULT_HEIGHT`
-- `DUCKMOTION_DEFAULT_FRAMES`
-- `DUCKMOTION_DEFAULT_FPS`
-- `DUCKMOTION_DEFAULT_STEPS`
-- `DUCKMOTION_DEFAULT_GUIDANCE_SCALE`
-- `DUCKMOTION_CUDA_MODE` (`offload` default, `full` optional)
-- `DUCKMOTION_MEMORY_POLICY` (`auto` default, `off`, `balanced`, or `aggressive`)
-- `DUCKMOTION_SAFETY_MODE` (`block` default, `warn`, or `off`)
-- `DUCKMOTION_KEEP_PIPELINE_LOADED` (`0` default, set `1` to keep Wan pipeline cached after jobs)
+```bash
+export DUCKMOTION_LTX_PYTHON=/path/to/ltx-env/bin/python
+```
 
-## Runtime + Device Handling
+LTX-2.5 currently tracks Diffusers main because its APIs have not yet landed in
+a stable Diffusers release.
 
-DuckMotion runs inside the WebbDuck process and reuses WebbDuck's runtime profile resolution behavior.
-That means DuckMotion follows WebbDuck environment/runtime settings such as:
+DuckMotion uses the reference distilled two-stage path:
 
-- `WEBBDUCK_DEVICE`
-- `WEBBDUCK_DTYPE`
-- `WEBBDUCK_STRICT_DEVICE`
+1. diffusion at half the requested final resolution;
+2. 2x latent spatial upsampling;
+3. short full-resolution refinement using the stage-2 distilled sigma schedule;
+4. synchronized audio/video encoding.
 
-By default, DuckMotion uses CPU offload mode for CUDA and unloads its Wan pipeline after each job to avoid interfering with WebbDuck image generation VRAM usage.
+The selected width and height describe the final output. Final dimensions are
+therefore normalized to multiples of 64, and frame counts use the LTX `8k+1`
+constraint. On a 16 GB GPU, the Diffusers worker defaults to sequential CPU
+offload.
 
-DuckMotion is intended to stay a single application even when multiple internal runtimes are supported. Backend selection is internal:
+## Model Discovery
 
-- `auto` keeps the UI simple and lets DuckMotion choose the safest viable runtime path
-- standard diffusers remains the baseline runtime
-- when compatible GGUF assets are available, DuckMotion can prefer an internal hybrid diffusers + GGUF path on tighter systems without exposing a second app or workflow graph to users
+DuckMotion searches architecture-neutral model roots plus the normal Hugging
+Face cache. A model does not need to be copied into a DuckMotion-specific
+folder.
 
-Before DuckMotion loads Wan, it also performs a best-effort cleanup pass against the in-process WebbDuck runtime:
+Relevant environment variables include:
 
-- unload loaded WebbDuck SDXL pipelines and cached components
-- unload captioner models when present
-- run Python GC and CUDA cache cleanup before Wan placement
+- `WEBBDUCK_MODELS_DIR`
+- `WEBBDUCK_HF_CACHE_DIR`
+- `HF_HUB_CACHE`
+- `HUGGINGFACE_HUB_CACHE`
+- `HF_HOME`
+- `DUCKMOTION_MODELS_DIR`
 
-DuckMotion also applies an adaptive memory policy by default:
+The persisted user configuration contains only:
 
-- `auto` inspects the WebbDuck runtime profile and chooses extra Wan memory reductions based on device mode and available VRAM
-- lower-VRAM CUDA systems prefer more aggressive options such as sequential CPU offload, attention slicing, and VAE tiling when those features exist in the installed diffusers build
-- higher-VRAM full-CUDA systems avoid extra reductions unless you explicitly request them
+- `model_id_or_path`
+- `models_dir`
+- `output_dir`
 
-If you need to override the automatic choice, set `DUCKMOTION_MEMORY_POLICY` to:
+There is no persisted architecture/backend selector.
 
-- `off`: disable extra Wan memory reductions
-- `balanced`: enable moderate memory reductions with limited performance impact
-- `aggressive`: prefer the lowest-VRAM path available, even when it is slower
+## Runtime Environment Variables
 
-DuckMotion also applies a Windows-focused preflight safety gate before queueing Wan jobs:
+Generic:
 
-- `block` refuses clearly dangerous jobs before model load begins
-- `warn` allows the job but reports detected risk in the API response and job warnings
-- `off` disables the guardrail entirely
+- `DUCKMOTION_MODEL_ID_OR_PATH`
+- `DUCKMOTION_MODELS_DIR`
+- `DUCKMOTION_OUTPUT_DIR`
 
-The safety gate is resource-aware. It checks detected runtime VRAM, requested resolution, frame count, step count, CUDA mode, memory policy, and Windows host-memory/page-file availability when that information is available.
+Wan runtime:
 
-## Requirements
+- `DUCKMOTION_WAN_PYTHON`
+- `DUCKMOTION_WAN_TIMEOUT_SECONDS`
+- `DUCKMOTION_WAN_OFFLOAD` (`auto`, `group`, `sequential`, `model`, `none`)
 
-DuckMotion depends on the WebbDuck runtime environment plus a diffusers build that includes:
+LTX runtime:
 
-- `WanImageToVideoPipeline`
-- `diffusers.utils.export_to_video`
+- `DUCKMOTION_LTX_PYTHON`
+- `DUCKMOTION_LTX_TIMEOUT_SECONDS`
+- `DUCKMOTION_LTX_OFFLOAD` (`auto`, `sequential`, `model`, `none`)
 
-If the installed diffusers version does not include Wan video support, the DuckMotion health panel will report it.
+DuckMotion reuses WebbDuck's runtime-profile and GPU-lease services through the
+architecture-neutral `host_runtime.py` bridge. The actual model code executes
+in child processes, so worker exit releases model resources.
 
-Video export also needs FFmpeg support. The `requirements.txt` includes `imageio-ffmpeg`; if export still fails on your system, install a system `ffmpeg` binary as well.
+## Current Model Defaults
 
-## Known Limitations (Current Scaffold)
+Defaults are properties of the detected model, not UI engine presets.
 
-- Running-job cancellation is best-effort (queued jobs can cancel cleanly; active diffusers jobs may complete before cancellation takes effect)
-- This plugin keeps its own job list and gallery (it does not yet extend WebbDuck's global queue/gallery UI)
-- Large Wan2.2 models can require significant VRAM and may need additional runtime tuning/offload settings later
+Generic Wan 2.2 defaults currently exposed by the descriptor are 832x480,
+81 frames, 16 fps, 30 steps, and guidance 5.0. The published TI2V-5B variant is
+checkpoint-specific: 1280x704 landscape, 121 frames, 24 fps, 50 steps, and
+guidance 5.0. Checkpoints identified as Turbo receive their fast checkpoint
+defaults rather than changing the application mode.
 
-## Windows Memory Note (Important for Wan2.2 A14B)
+LTX-2.5 defaults describe the final output: 1536x1024, 121 frames, 24 fps, with
+the distilled two-stage schedule and guidance 1.0. Its sampling schedule is
+locked to the checkpoint's explicit distilled sigma values rather than being a
+generic arbitrary-step workflow.
 
-On Windows, large Wan checkpoints can fail to load with:
+## API Surface
 
-- `os error 1455`
-- `The paging file is too small for this operation to complete`
-- `MemoryError` during `from_pretrained`
+The plugin exposes model-driven routes for:
 
-This is system virtual-memory exhaustion (page file), not just VRAM.
+- model discovery
+- config
+- health/runtime status
+- generation/jobs/cancellation
+- staging
+- gallery
+- recent WebbDuck images
 
-Recommended fix:
+Public model payloads expose capabilities, defaults, constraints, and readiness.
+They do not require clients to understand architecture/backend IDs.
 
-1. Open `System Properties` -> `Advanced` -> `Performance Settings` -> `Advanced` -> `Virtual memory`.
-2. Use `System managed size`, or set a custom size around `65536` to `131072` MB total.
-3. Reboot Windows.
-4. Retry DuckMotion generation.
+## Development Status
 
-## Development
+The runtime/backend architecture is intentionally being completed before the UI
+is rewritten. The current UI may still contain older Wan-shaped presentation
+until the capability-driven UI cutover lands.
 
-DuckMotion imports WebbDuck modules at runtime (storage + runtime profile resolution), so run it in a WebbDuck environment.
-
-For model/runtime architecture changes, follow `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` and `AGENTS.md`. The current Wan implementation is the compatibility baseline; new architectures should be added through model introspection and backend adapters rather than by adding architecture selectors to the normal UI.
+No full cross-model GPU validation should be inferred from the presence of a
+backend. The planned smoke matrix after the UI/server cutover covers Wan and
+LTX-2.5 alongside WebbDuck's SDXL, FLUX, Krea, and Qwen image backends.
