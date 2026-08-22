@@ -1,3 +1,9 @@
+.model-driven-app {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .model-driven-app .model-profile-card {
   display: grid;
   gap: 10px;
