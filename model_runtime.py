@@ -155,10 +155,8 @@ def detect_video_architecture(
         )
 
         if is_ti2v:
-            # The upstream Wan2.2 TI2V-5B model supports both workflows, but
-            # current Diffusers WanPipeline exposes only text conditioning for
-            # this checkpoint. Keep the latent model capability as detection
-            # metadata while the public/runnable capability stays honest.
+            # Upstream TI2V-5B supports both workflows, but current Diffusers
+            # WanPipeline exposes only text conditioning for this checkpoint.
             capabilities = VideoCapabilities(
                 text_to_video=True,
                 image_to_video=False,
@@ -219,8 +217,6 @@ def backend_is_implemented(backend: str | None) -> bool:
 def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
     architecture = (architecture or "").lower()
     if architecture == "ltx25":
-        # DuckMotion's production LTX path is two-stage: final dimensions are
-        # halved for stage 1, so final output dimensions must be multiples of 64.
         return {
             "dimension_multiple": 64,
             "frame_count_modulo": 8,
@@ -266,8 +262,24 @@ def defaults_for_model(
     detection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     defaults = defaults_for_architecture(architecture)
+    architecture = (architecture or "").lower()
     text = str(name or "").lower()
-    if (architecture or "").lower() == "wan22" and "turbo" in text:
+    variant = str((detection or {}).get("variant") or "").lower()
+
+    if architecture == "wan22" and variant == "ti2v":
+        # Published Wan2.2 TI2V-5B recipe is 720p landscape at 24fps.
+        defaults.update(
+            {
+                "width": 1280,
+                "height": 704,
+                "num_frames": 121,
+                "fps": 24,
+                "num_inference_steps": 50,
+                "guidance_scale": 5.0,
+            }
+        )
+
+    if architecture == "wan22" and "turbo" in text:
         defaults.update(
             {
                 "num_frames": 121,
@@ -321,7 +333,6 @@ class VideoBackend(ABC):
         """Execute a video generation request."""
 
     def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
-        """Probe whether the backend runtime is usable without loading the model."""
         ready = bool(self.can_handle(descriptor))
         return {
             "ready": ready,
@@ -371,7 +382,6 @@ class VideoBackendResolver:
         return tuple(self._backends.keys())
 
     def unload_all(self) -> None:
-        """Release resources for every installed backend without family branching."""
         errors: list[Exception] = []
         for backend in tuple(self._backends.values()):
             try:
