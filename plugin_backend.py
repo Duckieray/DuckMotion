@@ -5,9 +5,9 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
-from typing import Any, Callable
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 
@@ -21,22 +21,24 @@ from model_discovery import discover_video_models
 from model_runtime import backend_resolver, describe_video_model
 from runtime_services import VideoRuntimeServices
 from runtime_surfaces import VideoConfigPayload, VideoRuntimeSurfaces
+from storage_api import build_storage_router
 from wan_backend import ensure_registered as ensure_wan_registered
+from webbduck_media import recent_webbduck_images
 
 
 def _load_wan_implementation():
-    """Load the remaining implementation primitives still physically in backend.py.
+    """Load only the remaining in-process Wan/runtime implementation primitives.
 
-    backend.py no longer owns DuckMotion's public routing, job orchestration,
-    model catalog, config, health, or engine status. It is only a temporary
-    implementation source until the remaining utility functions are extracted.
+    The legacy backend router is never constructed. This prevents its worker
+    queue from starting and makes the public plugin composition independent of
+    the old Wan-shaped route table.
     """
     spec = importlib.util.spec_from_file_location(
         "duckmotion_wan_implementation",
         PLUGIN_ROOT / "backend.py",
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load DuckMotion implementation module.")
+        raise RuntimeError("Unable to load DuckMotion Wan implementation module.")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -74,44 +76,9 @@ class GeneratePayload(BaseModel):
     seed: int | None = None
 
 
-def _route_endpoint(router: APIRouter, path: str, method: str) -> Callable[..., Any] | None:
-    method = method.upper()
-    for route in router.routes:
-        if getattr(route, "path", None) != path:
-            continue
-        methods = {str(value).upper() for value in (getattr(route, "methods", None) or set())}
-        if method in methods:
-            return getattr(route, "endpoint", None)
-    return None
-
-
-def _copy_routes_except(source: APIRouter, target: APIRouter, excluded: set[tuple[str, str]]) -> None:
-    normalized = {(path, method.upper()) for path, method in excluded}
-    for route in source.routes:
-        path = str(getattr(route, "path", ""))
-        methods = {str(value).upper() for value in (getattr(route, "methods", None) or set())}
-        if any((path, method) in normalized for method in methods):
-            continue
-        target.routes.append(route)
-
-
 def get_router(plugin_manifest: dict | None = None) -> APIRouter:
-    implementation_router = wan_impl.get_router(plugin_manifest)
+    del plugin_manifest
     router = APIRouter()
-    _copy_routes_except(
-        implementation_router,
-        router,
-        {
-            ("/health", "GET"),
-            ("/config", "GET"),
-            ("/config", "POST"),
-            ("/models", "GET"),
-            ("/models/discover", "GET"),
-            ("/engine/status", "GET"),
-            ("/engine/unload", "POST"),
-            ("/engine/generate", "POST"),
-        },
-    )
 
     @router.get("/health")
     def health() -> dict[str, Any]:
@@ -129,6 +96,10 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
     @router.get("/models/discover")
     def models() -> dict[str, Any]:
         return discover_video_models(services.load_config())
+
+    @router.get("/engine/runtime")
+    def engine_runtime() -> dict[str, Any]:
+        return services.runtime_profile_safe()
 
     @router.get("/engine/status")
     def engine_status() -> dict[str, Any]:
@@ -164,6 +135,11 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
 
         return {"ok": True, "job": job, "model": descriptor.to_public_dict()}
 
+    @router.get("/webbduck/recent-images")
+    def recent_images(limit: int = Query(default=24, ge=1, le=200)) -> dict[str, Any]:
+        return {"items": recent_webbduck_images(int(limit))}
+
+    router.include_router(build_storage_router(services.storage, services.load_config))
     return router
 
 
