@@ -14,7 +14,32 @@ class WanDiffusersBackend(VideoBackend):
         self._impl = implementation
 
     def can_handle(self, descriptor: VideoModelDescriptor) -> bool:
-        return descriptor.backend == self.backend_id and descriptor.architecture == "wan22"
+        # The migrated Wan runtime currently owns the proven image-to-video
+        # implementation only. A future Wan T2V adapter can register separately
+        # without making the generic router branch on family names.
+        return (
+            descriptor.backend == self.backend_id
+            and descriptor.architecture == "wan22"
+            and descriptor.capabilities.image_to_video
+        )
+
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        if not self.can_handle(descriptor):
+            return {
+                "ready": False,
+                "reason": f"The installed runtime does not implement this workflow for '{descriptor.name}'.",
+            }
+        try:
+            status = self._impl._probe_diffusers_support()
+        except Exception as exc:
+            return {"ready": False, "reason": f"Video runtime probe failed: {exc}"}
+        if not isinstance(status, dict) or not status.get("ready"):
+            reason = status.get("error") if isinstance(status, dict) else None
+            return {
+                "ready": False,
+                "reason": str(reason or "Required video Diffusers pipeline is unavailable."),
+            }
+        return {"ready": True, "reason": None}
 
     def generate(
         self,
