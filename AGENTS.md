@@ -4,131 +4,155 @@ Use this file as the first-stop guide for implementation work in DuckMotion.
 
 ## Project Snapshot
 
-DuckMotion is a separately managed WebbDuck web plugin. The current implementation is a Wan2.2 image-to-video workspace using a local Diffusers runtime, plugin-local job queue, shared WebbDuck runtime profile, shared GPU lease, optional subprocess isolation, and plugin-local video gallery.
+DuckMotion is a separately managed WebbDuck web plugin for local video
+generation. Its runtime architecture is model-driven rather than Wan-first.
+The user selects a model; DuckMotion discovers capabilities/defaults/constraints
+and resolves an installed backend automatically.
 
-The **target architecture is model-driven rather than Wan-first**. Before adding another video architecture or making major model/runtime changes, read:
+Current runtime families:
+
+- Wan 2.2 through an isolated Diffusers worker.
+- LTX-2.5 through an isolated two-stage Diffusers worker with synchronized audio.
+
+Before major model/runtime work, read:
 
 1. `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md`
 2. `README.md`
-3. `backend.py`
-4. `ui/index.html`
-5. `ui/app.js`
-6. `tests/test_backend_memory_policy.py`
+3. `model_runtime.py`
+4. `plugin_backend.py`
+5. the relevant backend/worker pair
+6. the focused tests for that subsystem
 
 ## Non-Negotiable Product Rule
 
-The user selects a video model. DuckMotion automatically detects its architecture, capabilities, backend/runtime implementation, defaults, and constraints.
+The selected model is the user-facing generation choice. Architecture and
+backend/runtime identifiers are internal routing metadata.
 
-Do not solve new model support by adding required `Wan`, `LTX`, or other architecture tabs/dropdowns.
-
-Architecture/backend details may be shown in diagnostics, but they are not required inputs for normal generation.
+Do not add required Wan/LTX/architecture/backend tabs or dropdowns. Inputs and
+controls must be derived from selected-model capabilities, defaults, and
+constraints.
 
 ## Current Repo Map
 
 - `plugin.json`: WebbDuck web-plugin manifest.
-- `backend.py`: current router, config, discovery, queue, Wan runtime, isolation, memory/safety logic, output writing.
-- `ui/index.html`: Setup/Create/Jobs/Gallery markup.
-- `ui/app.js`: browser-side API/state/rendering behavior.
-- `ui/styles.css`: plugin styles.
-- `tools/install_webbduck_plugin.py`: installs/copies the plugin into WebbDuck plugin roots.
-- `tests/test_backend_memory_policy.py`: focused backend/memory/runtime tests.
-- `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md`: target architecture and migration plan.
+- `plugin_backend.py`: architecture-neutral API composition root.
+- `model_runtime.py`: video descriptors, capabilities, constraints, backend resolver.
+- `model_discovery.py`: local + Hugging Face cache model discovery.
+- `job_runtime.py`: generic job lifecycle and backend invocation.
+- `host_runtime.py`: architecture-neutral WebbDuck runtime/GPU lease bridge.
+- `runtime_services.py`: storage + host-runtime composition.
+- `runtime_surfaces.py`: generic health/config/status contracts.
+- `storage_runtime.py`: config/job/staging/gallery persistence.
+- `storage_api.py`: generic job/staging/gallery routes.
+- `wan_backend.py` / `wan_worker.py`: isolated Wan adapter/runtime.
+- `ltx_backend.py` / `ltx_worker.py`: isolated LTX-2.5 adapter/runtime.
+- `runtime_requirements/`: model-runtime-specific Python environments.
+- `ui/`: browser UI; until the final capability-driven rewrite it may contain older presentation assumptions.
+- `tests/`: focused contract/runtime tests.
 
-## Current Runtime Flow
+The former monolithic `backend.py` is intentionally deleted. Do not recreate a
+new architecture-specific application module under another name.
 
-1. WebbDuck discovers `plugin.json` and imports `backend.py`.
-2. `get_router()` starts the DuckMotion worker and returns the plugin API router.
-3. Setup/config selects one model source plus runtime/output defaults.
-4. A generation request becomes a persisted DuckMotion job.
-5. The DuckMotion worker acquires the shared WebbDuck GPU lease.
-6. DuckMotion asks WebbDuck to release generation/captioning VRAM where possible.
-7. Generation executes in-process or through the existing isolated child-process path.
-8. The current implementation loads a Wan Diffusers pipeline, generates frames, and exports a video.
-9. Job/output metadata is persisted under DuckMotion plugin state/output locations.
-10. The GPU lease is released in `finally` cleanup.
+## Runtime Flow
 
-## Target Ownership Boundaries
+1. WebbDuck imports `plugin_backend.py` from the plugin manifest.
+2. Config stores a selected model source plus generic model/output roots.
+3. Discovery produces model descriptors without loading runtime engines.
+4. A generation request is validated against the selected descriptor.
+5. `VideoJobCoordinator` persists the job and acquires WebbDuck's shared GPU lease.
+6. `VideoBackendResolver` chooses an installed backend from the descriptor.
+7. The backend launches its isolated worker environment.
+8. The worker loads its model-specific pipeline, generates artifacts, and exits.
+9. Generic storage normalizes/persists gallery/job metadata.
+10. The GPU lease is released in coordinator cleanup.
 
-As the architecture refactor proceeds, prefer these responsibilities even if file extraction happens gradually:
+## Ownership Boundaries
 
-- **model discovery/introspection**: find candidates and produce video-model descriptors;
-- **backend registry/resolver**: choose a compatible installed backend from a model descriptor + runtime;
-- **backend adapters**: own architecture/runtime-specific loading, validation, generation, and unloading;
-- **runtime isolation**: generic child-process launcher/progress/error protocol;
-- **job worker**: generic queue/job lifecycle and GPU lease ownership;
-- **artifact finalization**: persist video/audio/poster/metadata without assuming frame-only results;
-- **UI**: render selected-model capabilities, not architecture-specific pages.
+- **model discovery/introspection**: candidates -> descriptors;
+- **backend resolver**: descriptor -> installed backend;
+- **backend adapters**: request serialization, readiness, child process lifecycle;
+- **workers**: model-family-specific imports/loading/memory/generation;
+- **host runtime**: WebbDuck runtime profile and GPU lease only;
+- **job coordinator**: generic job lifecycle and lease ownership;
+- **storage**: config/jobs/staging/gallery/filesystem behavior;
+- **UI**: selected-model capabilities and constraints only.
 
-## Architecture Refactor Rules
+Generic modules must not import Wan/LTX Diffusers pipeline classes.
 
-- Keep the selected **model** as the main configuration key.
+## Architecture Rules
+
+- Keep model selection as the main configuration key.
 - Do not require architecture knowledge from API clients.
-- Do not spread architecture checks through router/job/UI code.
-- Treat `architecture`, `artifact_format`, and `runtime backend` as separate descriptor concepts.
-- Preserve current Wan Diffusers/GGUF/memory/safety behavior while extracting it behind adapters.
-- Make source media required/optional/unsupported through selected-model capabilities; do not keep image input globally mandatory.
-- Allow backends to return normalized artifacts instead of forcing every model to return PIL frame lists.
-- Preserve shared GPU lease ownership across subprocess runtimes.
-- Prefer isolated environments when a new model's Python/Diffusers/Transformers/CUDA requirements conflict with WebbDuck's stable environment.
-- Unknown model assets should fail with model-detection/readiness diagnostics rather than being guessed as Wan.
+- Do not spread family-name checks through router/job/UI code.
+- Unknown models fail with detection/readiness diagnostics rather than being guessed.
+- Source media required/optional/unsupported is a model capability.
+- Backend-specific Python dependencies belong in isolated runtime environments.
+- Backend workers may use different Diffusers/Transformers versions without changing WebbDuck's host environment.
+- Preserve explicit seed `0`.
+- Model-specific schedules/defaults belong to descriptors or workers, not UI engine presets.
+- Backend resource cleanup must remain resolver-driven, not family-driven.
 
-## LTX-2.5 Target
+## Wan Runtime
 
-LTX-2.5 is the first non-Wan validation architecture for the model-driven design.
+The current isolated Wan backend supports model descriptors advertising T2V,
+I2V, or both (TI2V). A pure I2V model requires a source image; TI2V models do
+not make image input globally mandatory.
 
-The first implementation should prioritize:
+Wan memory policy belongs in `wan_worker.py`. On constrained GPUs, use Diffusers
+offload APIs rather than adding runtime selectors to the UI. Very large A14B
+checkpoints may still be impractical on a host despite disk/group offload; do
+not claim feasibility without a real smoke run.
 
-1. text-to-video with synchronized audio;
-2. image-to-video with synchronized audio;
-3. model-specific duration/scheduling/default behavior;
-4. output artifact/muxing support;
-5. later multishot and additional conditioning inputs.
+## LTX-2.5 Runtime
 
-Use the official split-component/runtime path and/or Diffusers-compatible pack behind backend adapters. Do not globally upgrade WebbDuck's environment merely to make the first LTX path load.
+The production path is the reference distilled two-stage flow:
+
+1. stage-1 diffusion at half final resolution;
+2. latent 2x spatial upsample;
+3. full-resolution stage-2 refinement using the stage-2 distilled sigma schedule;
+4. synchronized audio/video encoding.
+
+Final dimensions are multiples of 64 and frame count follows `8k+1`. Do not
+replace the explicit distilled sigma schedules with a generic arbitrary-step
+schedule unless upstream model behavior explicitly changes.
+
+LTX currently tracks Diffusers main in its isolated environment. Do not upgrade
+WebbDuck globally for LTX.
 
 ## WebbDuck Integration Rules
 
-DuckMotion is optional. WebbDuck must remain usable when DuckMotion is missing or broken.
+DuckMotion is optional; WebbDuck must remain usable if it is absent or broken.
+DuckMotion may reuse WebbDuck runtime-profile resolution, output/media paths,
+and the shared GPU lease. It must not depend on WebbDuck image pipeline classes.
 
-DuckMotion may reuse:
-
-- WebbDuck runtime profile resolution;
-- WebbDuck path/model-root hints;
-- WebbDuck output paths for image handoff;
-- WebbDuck shared GPU lease;
-- WebbDuck model unload hooks.
-
-Do not make DuckMotion depend on WebbDuck image-generation internals such as SDXL pipeline classes.
-
-A WebbDuck -> DuckMotion handoff should send source media and generation context. It should not dictate `engine=wan` or `engine=ltx`.
+A WebbDuck -> DuckMotion handoff sends source media and generation context. It
+does not dictate `engine=wan` or `engine=ltx`.
 
 ## Verification
 
-For documentation-only changes, verify file presence/content and branch diff.
-
-For runtime changes, run the narrowest relevant tests first, then broaden when shared contracts change. At minimum consider:
+Run the narrowest relevant tests first, then broaden for shared contracts. Useful
+sets include:
 
 ```bash
-pytest -v tests/test_backend_memory_policy.py
+pytest -v \
+  tests/test_model_runtime.py \
+  tests/test_model_discovery.py \
+  tests/test_runtime_readiness.py \
+  tests/test_job_runtime.py \
+  tests/test_wan_backend.py \
+  tests/test_ltx_backend.py \
+  tests/test_backend_memory_policy.py \
+  tests/test_plugin_backend.py \
+  tests/test_legacy_backend_removed.py
 ```
 
-When the model-driven refactor adds new test modules, cover:
-
-- discovery/descriptors;
-- backend resolver/readiness;
-- generic request validation;
-- Wan regression behavior;
-- subprocess progress/error/lease handling;
-- LTX video+audio generation;
-- model switching/resource cleanup;
-- UI capability behavior.
-
-Never claim a real-model smoke test ran if the required weights/hardware/runtime were not available.
+Never claim a real-model smoke test ran unless the required weights, runtime,
+and hardware were actually used.
 
 ## Git Rules
 
 - Work on a feature branch, not `main`.
-- Keep commits scoped to the requested work.
+- Keep commits scoped.
 - Do not commit model weights, outputs, plugin state, child logs, secrets, or machine-specific paths.
 - Do not force-push or rewrite unrelated history.
-- Update `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` when implementation decisions materially change the target contract.
+- Update architecture docs when implementation materially changes the contract.
