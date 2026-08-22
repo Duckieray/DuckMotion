@@ -34,21 +34,62 @@ def _endpoint(router, path, method):
     raise AssertionError(f"Missing route {method} {path}")
 
 
-def test_discovery_keeps_legacy_shape_and_adds_generic_catalog(monkeypatch):
+def test_discovery_keeps_legacy_shape_and_makes_catalog_picker_visible(monkeypatch):
     monkeypatch.setattr(plugin_backend.legacy, "_discover_local_models", lambda _config: {
-        "items": [{"path": "/wan"}],
+        "items": [{"path": "/wan", "label": "Wan", "source": "checkpoint_wan"}],
         "gguf_candidates": [],
     })
     monkeypatch.setattr(plugin_backend, "discover_video_models", lambda _config: {
-        "items": [{"name": "LTX-2.5", "source": "/cache/ltx", "supported": False}],
-        "count": 1,
+        "items": [
+            {
+                "name": "Wan",
+                "source": "/wan",
+                "location": "local",
+                "supported": True,
+                "capabilities": {"image_to_video": True},
+            },
+            {
+                "name": "LTX-2.5",
+                "source": "/cache/ltx",
+                "location": "hf_cache",
+                "supported": False,
+                "capabilities": {"text_to_video": True, "image_to_video": True, "audio_output": True},
+                "constraints": {"dimension_multiple": 32},
+            },
+        ],
+        "count": 2,
         "hf_cache": "/cache/hub",
     })
 
     payload = plugin_backend._catalog_with_legacy_compat({})
-    assert payload["items"] == [{"path": "/wan"}]
-    assert payload["catalog_items"][0]["name"] == "LTX-2.5"
-    assert payload["catalog_count"] == 1
+
+    assert len(payload["items"]) == 2
+    wan = next(row for row in payload["items"] if row["path"] == "/wan")
+    ltx = next(row for row in payload["items"] if row["path"] == "/cache/ltx")
+
+    assert wan["label"] == "Wan"
+    assert wan["capabilities"]["image_to_video"] is True
+    assert ltx["label"] == "LTX-2.5 — runtime unavailable"
+    assert ltx["source"] == "hf_cache"
+    assert ltx["supported"] is False
+    assert ltx["capabilities"]["audio_output"] is True
+    assert payload["catalog_count"] == 2
+
+
+def test_picker_adapter_does_not_expose_architecture_or_backend():
+    row = plugin_backend._picker_item_from_catalog({
+        "name": "LTX-2.5",
+        "source": "/cache/ltx",
+        "location": "hf_cache",
+        "supported": False,
+        "capabilities": {"text_to_video": True},
+        "architecture": "ltx25",
+        "backend": "ltx25_isolated",
+    })
+    assert row is not None
+    assert "architecture" not in row
+    assert "backend" not in row
+    assert row["label"].endswith("runtime unavailable")
 
 
 def test_router_replaces_generate_and_discovery_but_preserves_other_routes(monkeypatch):
