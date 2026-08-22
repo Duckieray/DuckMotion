@@ -145,6 +145,15 @@ def backend_for_architecture(architecture: str | None) -> str:
     }.get((architecture or "").lower(), UNSUPPORTED_BACKEND)
 
 
+def backend_for_model(architecture: str | None, capabilities: VideoCapabilities) -> str:
+    """Choose a backend route from the detected model workflow, not UI input."""
+    architecture = (architecture or "").lower()
+    if architecture == "wan22" and not capabilities.image_to_video:
+        # The current migrated Wan adapter implements the proven I2V path only.
+        return UNSUPPORTED_BACKEND
+    return backend_for_architecture(architecture)
+
+
 _IMPLEMENTED_BACKENDS = {"wan_diffusers", "ltx25_isolated"}
 
 
@@ -202,7 +211,7 @@ def describe_video_model(
         name=display_name,
         source=source,
         architecture=architecture,
-        backend=backend_for_architecture(architecture),
+        backend=backend_for_model(architecture, capabilities),
         capabilities=capabilities,
         defaults=effective_defaults,
         constraints=constraints_for_architecture(architecture),
@@ -225,6 +234,14 @@ class VideoBackend(ABC):
         **kwargs: Any,
     ) -> Any:
         """Execute a video generation request."""
+
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        """Probe whether the backend runtime is usable without loading the model."""
+        ready = bool(self.can_handle(descriptor))
+        return {
+            "ready": ready,
+            "reason": None if ready else f"Installed runtime cannot handle video model '{descriptor.name}'.",
+        }
 
     def unload(self) -> None:
         """Release runtime resources if loaded."""
@@ -255,8 +272,29 @@ class VideoBackendResolver:
             f"(backend={descriptor.backend!r})."
         )
 
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        backend = self.resolve(descriptor)
+        payload = backend.readiness(descriptor)
+        if not isinstance(payload, dict):
+            return {"ready": False, "reason": "Backend returned an invalid readiness payload."}
+        return {
+            "ready": bool(payload.get("ready")),
+            "reason": payload.get("reason"),
+        }
+
     def ids(self) -> tuple[str, ...]:
         return tuple(self._backends.keys())
+
+    def unload_all(self) -> None:
+        """Release resources for every installed backend without family branching."""
+        errors: list[Exception] = []
+        for backend in tuple(self._backends.values()):
+            try:
+                backend.unload()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise RuntimeError(f"Failed to unload {len(errors)} DuckMotion backend(s): {errors[0]}")
 
 
 backend_resolver = VideoBackendResolver()

@@ -17,8 +17,24 @@ def _fake_implementation_router():
         return {"legacy": True}
 
     @router.get("/health")
-    def health():
-        return {"ok": True}
+    def old_health():
+        return {"legacy_health": True}
+
+    @router.get("/config")
+    def old_config():
+        return {"runtime_backend": "wan"}
+
+    @router.get("/engine/status")
+    def old_status():
+        return {"pipeline": "WanImageToVideoPipeline"}
+
+    @router.post("/engine/unload")
+    def old_unload():
+        return {"legacy_unload": True}
+
+    @router.get("/gallery")
+    def gallery():
+        return {"items": []}
 
     return router
 
@@ -33,9 +49,13 @@ def _endpoint(router, path, method):
     raise AssertionError(f"Missing route {method} {path}")
 
 
-def test_router_exposes_generic_model_catalog(monkeypatch):
+def test_router_replaces_model_config_health_and_status_surfaces(monkeypatch):
     monkeypatch.setattr(plugin_backend.wan_impl, "get_router", lambda _manifest=None: _fake_implementation_router())
-    monkeypatch.setattr(plugin_backend.wan_impl, "_load_config", lambda: {})
+    monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {})
+    monkeypatch.setattr(plugin_backend.runtime_surfaces, "health", lambda: {"mode": "model-driven-local-runtime"})
+    monkeypatch.setattr(plugin_backend.runtime_surfaces, "get_config", lambda: {"config": {"model_id_or_path": ""}})
+    monkeypatch.setattr(plugin_backend.runtime_surfaces, "engine_status", lambda: {"type": "model-driven-video-runtime"})
+    monkeypatch.setattr(plugin_backend.runtime_surfaces, "unload", lambda: {"ok": True})
     monkeypatch.setattr(plugin_backend, "discover_video_models", lambda _config: {
         "items": [
             {
@@ -50,7 +70,12 @@ def test_router_exposes_generic_model_catalog(monkeypatch):
     })
 
     router = plugin_backend.get_router()
-    assert _endpoint(router, "/health", "GET")() == {"ok": True}
+    assert _endpoint(router, "/health", "GET")() == {"mode": "model-driven-local-runtime"}
+    assert _endpoint(router, "/config", "GET")() == {"config": {"model_id_or_path": ""}}
+    assert _endpoint(router, "/engine/status", "GET")() == {"type": "model-driven-video-runtime"}
+    assert _endpoint(router, "/engine/unload", "POST")() == {"ok": True}
+    assert _endpoint(router, "/gallery", "GET")() == {"items": []}
+
     payload = _endpoint(router, "/models", "GET")()
     assert payload["items"][0]["name"] == "LTX-2.5"
     assert payload["items"][0]["supported"] is True
@@ -59,7 +84,7 @@ def test_router_exposes_generic_model_catalog(monkeypatch):
 
 def _exercise_generate(monkeypatch, model_source, payload):
     monkeypatch.setattr(plugin_backend.wan_impl, "get_router", lambda _manifest=None: _fake_implementation_router())
-    monkeypatch.setattr(plugin_backend.wan_impl, "_load_config", lambda: {"model_id_or_path": model_source})
+    monkeypatch.setattr(plugin_backend.services, "load_config", lambda: {"model_id_or_path": model_source})
     monkeypatch.setattr(plugin_backend, "_register_installed_backends", lambda: None)
 
     submitted = {}
@@ -106,11 +131,10 @@ def test_wan_uses_same_generic_job_coordinator(monkeypatch):
     assert submitted["request"]["image_path"] == "/tmp/source.png"
 
 
-def test_route_contains_no_backend_family_dispatch():
-    # The API route should resolve + submit; family-specific execution belongs
-    # behind VideoBackend implementations, not in plugin composition.
+def test_route_contains_no_backend_family_dispatch_or_legacy_config_read():
     import inspect
 
     source = inspect.getsource(plugin_backend.get_router)
     assert 'descriptor.backend == "ltx' not in source
     assert 'descriptor.backend == "wan' not in source
+    assert "wan_impl._load_config" not in source

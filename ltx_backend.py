@@ -16,9 +16,62 @@ from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 
 class LTX25IsolatedBackend(VideoBackend):
     backend_id = "ltx25_isolated"
+    _readiness_ttl_seconds = 60.0
+
+    def __init__(self) -> None:
+        self._readiness_checked_at = 0.0
+        self._readiness_python = ""
+        self._readiness_payload: dict[str, Any] | None = None
 
     def can_handle(self, descriptor: VideoModelDescriptor) -> bool:
-        return descriptor.backend == self.backend_id and descriptor.architecture == "ltx25"
+        return (
+            descriptor.backend == self.backend_id
+            and descriptor.architecture == "ltx25"
+            and (descriptor.capabilities.text_to_video or descriptor.capabilities.image_to_video)
+        )
+
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        if not self.can_handle(descriptor):
+            return {
+                "ready": False,
+                "reason": f"The installed runtime does not implement this workflow for '{descriptor.name}'.",
+            }
+
+        python_exe = os.getenv("DUCKMOTION_LTX_PYTHON") or sys.executable
+        now = time.monotonic()
+        if (
+            self._readiness_payload is not None
+            and self._readiness_python == python_exe
+            and now - self._readiness_checked_at < self._readiness_ttl_seconds
+        ):
+            return dict(self._readiness_payload)
+
+        probe = (
+            "from diffusers import LTX2ImageToVideoPipeline, LTX2Pipeline; "
+            "from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES; "
+            "from diffusers.utils import encode_video"
+        )
+        try:
+            completed = subprocess.run(
+                [python_exe, "-c", probe],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if completed.returncode == 0:
+                payload = {"ready": True, "reason": None}
+            else:
+                detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+                reason = detail[-1] if detail else f"Runtime probe exited with code {completed.returncode}."
+                payload = {"ready": False, "reason": f"LTX runtime dependencies unavailable: {reason}"}
+        except Exception as exc:
+            payload = {"ready": False, "reason": f"Unable to probe LTX runtime: {exc}"}
+
+        self._readiness_checked_at = now
+        self._readiness_python = python_exe
+        self._readiness_payload = dict(payload)
+        return payload
 
     def generate(
         self,
