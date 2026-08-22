@@ -1,13 +1,12 @@
-# LTX-2.5 two-stage Diffusers runtime
+# LTX-2.5 two-stage isolated Diffusers runtime
 #
-# LTX-2.5 support currently lives on Diffusers main rather than a stable
-# release. Install this in a dedicated environment and set DUCKMOTION_LTX_PYTHON
-# to its Python executable. Install a matching PyTorch build separately for the
-# host CUDA stack. This environment must provide the LTX latent upsampler and
-# stage-2 distilled sigma APIs used by DuckMotion's production path.
-git+https://github.com/huggingface/diffusers.git
+# Install PyTorch separately for the target CUDA stack, then install this file
+# in a dedicated environment and set DUCKMOTION_LTX_PYTHON to that Python.
+# LTX-2.5 APIs are not yet in stable Diffusers, so pin the exact Diffusers-main
+# commit used for the first WebbDuck/DuckMotion hardware validation baseline.
+git+https://github.com/huggingface/diffusers.git@4c52cb267ab60d239e3afccaa54ff7bcaa7f25fb
 transformers>=4.57.0
-accelerate>=1.0.0
+accelerate>=1.12.0,<2
 safetensors>=0.5.0
 huggingface_hub>=0.36.0
 sentencepiece>=0.2.0
