@@ -226,6 +226,14 @@ class VideoBackend(ABC):
     ) -> Any:
         """Execute a video generation request."""
 
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        """Probe whether the backend runtime is usable without loading the model."""
+        ready = bool(self.can_handle(descriptor))
+        return {
+            "ready": ready,
+            "reason": None if ready else f"Installed runtime cannot handle video model '{descriptor.name}'.",
+        }
+
     def unload(self) -> None:
         """Release runtime resources if loaded."""
 
@@ -254,6 +262,16 @@ class VideoBackendResolver:
             f"No DuckMotion backend is registered for model '{descriptor.name}' "
             f"(backend={descriptor.backend!r})."
         )
+
+    def readiness(self, descriptor: VideoModelDescriptor) -> dict[str, Any]:
+        backend = self.resolve(descriptor)
+        payload = backend.readiness(descriptor)
+        if not isinstance(payload, dict):
+            return {"ready": False, "reason": "Backend returned an invalid readiness payload."}
+        return {
+            "ready": bool(payload.get("ready")),
+            "reason": payload.get("reason"),
+        }
 
     def ids(self) -> tuple[str, ...]:
         return tuple(self._backends.keys())
