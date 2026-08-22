@@ -2,6 +2,10 @@
 
 The worker deliberately owns every Wan-specific dependency and memory decision.
 DuckMotion's plugin process only sees the generic VideoBackend contract.
+
+Both ordinary Diffusers model directories/repos and the historical hybrid
+Diffusers + GGUF transformer path execute through this same worker. GGUF is an
+internal checkpoint format, not a separate user-facing backend.
 """
 
 from __future__ import annotations
@@ -9,8 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import traceback
 from pathlib import Path
+import re
+import traceback
 
 
 def _snap_dimension(value: int, multiple: int = 16) -> int:
@@ -35,8 +40,17 @@ def _system_memory_gb() -> float:
 
 def _source_size_gb(source: str) -> float:
     path = Path(source).expanduser()
-    if not path.exists() or not path.is_dir():
+    if not path.exists():
         return 0.0
+    if path.is_file():
+        try:
+            size = path.stat().st_size
+            pair = _gguf_pair_path(path)
+            if pair is not None and pair.exists() and pair != path:
+                size += pair.stat().st_size
+            return float(size) / 1024**3
+        except OSError:
+            return 0.0
     total = 0
     try:
         for item in path.rglob("*"):
@@ -47,8 +61,128 @@ def _source_size_gb(source: str) -> float:
     return float(total) / 1024**3
 
 
-def _load_pipeline(model_path: str, image_to_video: bool, dtype):
+def _gguf_pair_path(path: Path) -> Path | None:
+    """Find the H/L mate for Wan2.2 dual-transformer GGUF checkpoints."""
+    stem = path.stem
+    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    if match:
+        other = "L" if match.group(3).upper() == "H" else "H"
+        candidate = path.with_name(f"{match.group(1)}{match.group(2)}{other}{path.suffix}")
+        if candidate.exists():
+            return candidate
+
+    # Also recognize common descriptive high-noise / low-noise naming.
+    swaps = (
+        ("high_noise", "low_noise"),
+        ("high-noise", "low-noise"),
+        ("high noise", "low noise"),
+    )
+    lower = path.name.lower()
+    for high, low in swaps:
+        if high in lower:
+            idx = lower.index(high)
+            candidate_name = path.name[:idx] + low + path.name[idx + len(high):]
+            candidate = path.with_name(candidate_name)
+            if candidate.exists():
+                return candidate
+        if low in lower:
+            idx = lower.index(low)
+            candidate_name = path.name[:idx] + high + path.name[idx + len(low):]
+            candidate = path.with_name(candidate_name)
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def _gguf_role(path: Path) -> str | None:
+    match = re.search(r"(?i)(?:[_ .-]?)([hl])$", path.stem)
+    if match:
+        return match.group(1).upper()
+    lower = path.name.lower()
+    if "high_noise" in lower or "high-noise" in lower or "high noise" in lower:
+        return "H"
+    if "low_noise" in lower or "low-noise" in lower or "low noise" in lower:
+        return "L"
+    return None
+
+
+def _gguf_base_model_id(image_to_video: bool) -> str:
+    if image_to_video:
+        return str(
+            os.getenv("DUCKMOTION_WAN_GGUF_I2V_BASE")
+            or "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+        )
+    return str(
+        os.getenv("DUCKMOTION_WAN_GGUF_T2V_BASE")
+        or "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    )
+
+
+def _load_gguf_transformer(path: Path, *, config_source: str, subfolder: str, dtype):
+    from diffusers import GGUFQuantizationConfig, WanTransformer3DModel
+
+    kwargs = {
+        "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
+        "quantization_config": GGUFQuantizationConfig(compute_dtype=dtype),
+        "config": config_source,
+        "subfolder": subfolder,
+    }
+    return WanTransformer3DModel.from_single_file(str(path), **kwargs)
+
+
+def _load_gguf_pipeline(model_path: str, image_to_video: bool, dtype):
+    """Assemble a Wan pipeline using local GGUF H/L transformer weights."""
     from diffusers import WanImageToVideoPipeline, WanPipeline
+
+    selected = Path(model_path).expanduser().resolve()
+    if not selected.exists() or not selected.is_file():
+        raise FileNotFoundError(f"Wan GGUF checkpoint does not exist: {selected}")
+
+    mate = _gguf_pair_path(selected)
+    role = _gguf_role(selected)
+    if role == "L" and mate is not None:
+        high_path, low_path = mate, selected
+    else:
+        high_path, low_path = selected, mate
+
+    base_model_id = _gguf_base_model_id(image_to_video)
+    transformer = _load_gguf_transformer(
+        high_path,
+        config_source=base_model_id,
+        subfolder="transformer",
+        dtype=dtype,
+    )
+
+    transformer_2 = None
+    if low_path is not None:
+        transformer_2 = _load_gguf_transformer(
+            low_path,
+            config_source=base_model_id,
+            subfolder="transformer_2",
+            dtype=dtype,
+        )
+
+    cls = WanImageToVideoPipeline if image_to_video else WanPipeline
+    kwargs = {
+        "transformer": transformer,
+        "low_cpu_mem_usage": True,
+    }
+    if transformer_2 is not None:
+        # Critical for A14B GGUF pairs: supplying both denoisers prevents
+        # from_pretrained() from fetching the enormous stock transformer_2.
+        kwargs["transformer_2"] = transformer_2
+    try:
+        return cls.from_pretrained(base_model_id, dtype=dtype, **kwargs)
+    except TypeError:
+        return cls.from_pretrained(base_model_id, torch_dtype=dtype, **kwargs)
+
+
+def _load_pipeline(model_path: str, image_to_video: bool, dtype, source_format: str = "diffusers"):
+    from diffusers import WanImageToVideoPipeline, WanPipeline
+
+    if source_format == "gguf" or Path(model_path).suffix.lower() == ".gguf":
+        return _load_gguf_pipeline(model_path, image_to_video, dtype)
 
     cls = WanImageToVideoPipeline if image_to_video else WanPipeline
     kwargs = {"low_cpu_mem_usage": True}
@@ -93,8 +227,6 @@ def _configure_memory(
                 pipe.enable_group_offload(**kwargs)
                 return "group"
             except TypeError:
-                # Some Diffusers revisions do not yet expose low_cpu_mem_usage
-                # at the pipeline convenience method.
                 kwargs.pop("low_cpu_mem_usage", None)
                 pipe.enable_group_offload(**kwargs)
                 return "group"
@@ -136,6 +268,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         raise RuntimeError("Wan runtime currently requires CUDA")
 
     model_path = str(request["model_path"])
+    source_format = str(request.get("source_format") or "diffusers").lower()
     prompt = str(request.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("Prompt is required")
@@ -155,7 +288,7 @@ def _run(request: dict, output_dir: Path) -> dict:
     seed = int(request.get("seed") if request.get("seed") is not None else 0)
 
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    pipe = _load_pipeline(model_path, bool(input_image), dtype)
+    pipe = _load_pipeline(model_path, bool(input_image), dtype, source_format)
 
     try:
         pipe.vae.enable_tiling()
@@ -194,9 +327,10 @@ def _run(request: dict, output_dir: Path) -> dict:
     export_to_video(frames, str(video_path), fps=fps)
     _save_poster(frames, poster_path)
 
+    pair = _gguf_pair_path(Path(model_path).expanduser()) if source_format == "gguf" else None
     meta = {
         "plugin": "duckmotion",
-        "model": Path(model_path).name or model_path,
+        "model": str(request.get("model_name") or Path(model_path).name or model_path),
         "created_at": __import__("time").time(),
         "operation": "image_to_video" if input_image else "text_to_video",
         "prompt": prompt,
@@ -212,6 +346,8 @@ def _run(request: dict, output_dir: Path) -> dict:
             "device": "cuda",
             "dtype": str(dtype).replace("torch.", ""),
             "offload": offload,
+            "source_format": source_format,
+            "gguf_pair_present": bool(pair) if source_format == "gguf" else None,
             "total_vram_gb": round(total_vram_gb, 2),
             "system_memory_gb": round(_system_memory_gb(), 2),
             "source_size_gb": round(_source_size_gb(model_path), 2),
