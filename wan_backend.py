@@ -21,7 +21,7 @@ class WanDiffusersBackend(VideoBackend):
 
     def __init__(self) -> None:
         self._readiness_checked_at = 0.0
-        self._readiness_python = ""
+        self._readiness_key: tuple[str, str] | None = None
         self._readiness_payload: dict[str, Any] | None = None
 
     def can_handle(self, descriptor: VideoModelDescriptor) -> bool:
@@ -39,25 +39,35 @@ class WanDiffusersBackend(VideoBackend):
             }
 
         python_exe = os.getenv("DUCKMOTION_WAN_PYTHON") or sys.executable
+        source_format = str((descriptor.detection or {}).get("format") or "diffusers").lower()
+        readiness_key = (python_exe, source_format)
         now = time.monotonic()
         if (
             self._readiness_payload is not None
-            and self._readiness_python == python_exe
+            and self._readiness_key == readiness_key
             and now - self._readiness_checked_at < self._readiness_ttl_seconds
         ):
             return dict(self._readiness_payload)
 
-        payload = probe_python_runtime(
-            python_exe,
-            (
-                ("diffusers", "WanPipeline"),
-                ("diffusers", "WanImageToVideoPipeline"),
-                ("diffusers.utils", "export_to_video"),
-                ("diffusers.utils", "load_image"),
-            ),
-        )
+        symbols: list[tuple[str, str]] = [
+            ("diffusers", "WanPipeline"),
+            ("diffusers", "WanImageToVideoPipeline"),
+            ("diffusers.utils", "export_to_video"),
+            ("diffusers.utils", "load_image"),
+        ]
+        if source_format == "gguf":
+            symbols.extend(
+                [
+                    ("diffusers", "WanTransformer3DModel"),
+                    ("diffusers", "GGUFQuantizationConfig"),
+                    ("gguf", "GGUFReader"),
+                ]
+            )
+
+        payload = probe_python_runtime(python_exe, tuple(symbols))
+        payload["source_format"] = source_format
         self._readiness_checked_at = now
-        self._readiness_python = python_exe
+        self._readiness_key = readiness_key
         self._readiness_payload = dict(payload)
         return payload
 
@@ -82,6 +92,8 @@ class WanDiffusersBackend(VideoBackend):
         )
         payload = {
             "model_path": descriptor.source,
+            "model_name": descriptor.name,
+            "source_format": str((descriptor.detection or {}).get("format") or "diffusers").lower(),
             "prompt": str(request.get("prompt") or "").strip(),
             "negative_prompt": str(request.get("negative_prompt") or ""),
             "input_image": str(request.get("image_path") or "").strip() or None,
