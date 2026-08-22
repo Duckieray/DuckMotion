@@ -43,7 +43,8 @@ class VideoModelDescriptor:
 
     @property
     def supported(self) -> bool:
-        return self.backend != UNSUPPORTED_BACKEND and (
+        """Whether this model is runnable in the current DuckMotion build."""
+        return backend_is_implemented(self.backend) and (
             self.capabilities.text_to_video or self.capabilities.image_to_video
         )
 
@@ -88,7 +89,10 @@ def _source_tokens(source: str) -> tuple[str, dict[str, Any]]:
     if path.exists() and path.is_dir():
         index = _read_json(path / "model_index.json")
         transformer = _read_json(path / "transformer" / "config.json")
-        return " ".join(part for part in (_tokens(index), _tokens(transformer), path.name.lower()) if part), {
+        tokens = " ".join(
+            part for part in (_tokens(index), _tokens(transformer), path.name.lower()) if part
+        )
+        return tokens, {
             "method": "local_config",
             "confidence": "high" if index or transformer else "medium",
         }
@@ -114,7 +118,6 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
         )
 
     if "wan" in tokens:
-        # A selected I2V checkpoint should keep today's required-image behavior.
         is_i2v = "imagetovideo" in tokens or "image-to-video" in tokens or "i2v" in tokens
         is_t2v = "texttovideo" in tokens or "text-to-video" in tokens or "t2v" in tokens
         if is_t2v and not is_i2v:
@@ -140,10 +143,19 @@ def detect_video_architecture(source: str) -> tuple[str, VideoCapabilities, dict
 def backend_for_architecture(architecture: str | None) -> str:
     return {
         "wan22": "wan_diffusers",
-        # LTX 2.5 intentionally starts isolated so its dependency/runtime
-        # requirements cannot destabilize the working Wan/WebbDuck environment.
+        # LTX starts isolated so newer runtime requirements cannot destabilize
+        # the working Wan/WebbDuck environment.
         "ltx25": "ltx25_isolated",
     }.get((architecture or "").lower(), UNSUPPORTED_BACKEND)
+
+
+# Discovery may know how a future model should run before that adapter exists.
+# Only backends actually connected to live execution belong here.
+_IMPLEMENTED_BACKENDS = {"wan_diffusers"}
+
+
+def backend_is_implemented(backend: str | None) -> bool:
+    return (backend or "") in _IMPLEMENTED_BACKENDS
 
 
 def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
@@ -187,7 +199,12 @@ class VideoBackend(ABC):
         """Return whether this runtime adapter can execute the descriptor."""
 
     @abstractmethod
-    def generate(self, descriptor: VideoModelDescriptor, request: dict[str, Any], **kwargs: Any) -> Any:
+    def generate(
+        self,
+        descriptor: VideoModelDescriptor,
+        request: dict[str, Any],
+        **kwargs: Any,
+    ) -> Any:
         """Execute a video generation request."""
 
     def unload(self) -> None:
