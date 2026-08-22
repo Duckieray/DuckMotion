@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +24,41 @@ class VideoRuntimeServices:
         return float(self._impl._now())
 
     def load_config(self) -> dict[str, Any]:
-        return dict(self._impl._load_config())
+        """Load generic saved fields over temporary backend-internal defaults."""
+        config = dict(self._impl._default_config())
+        raw: dict[str, Any] = {}
+        path = Path(self._impl.CONFIG_FILE)
+        if path.exists():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    raw = value
+            except Exception:
+                raw = {}
+
+        # Selection is no longer implicitly Wan. With no saved selection, only
+        # an explicit environment override selects a model.
+        config["model_id_or_path"] = str(
+            raw.get("model_id_or_path")
+            if "model_id_or_path" in raw
+            else os.getenv("DUCKMOTION_MODEL_ID_OR_PATH", "")
+        ).strip()
+        if "models_dir" in raw:
+            config["models_dir"] = str(raw.get("models_dir") or "").strip()
+        if "output_dir" in raw:
+            config["output_dir"] = str(raw.get("output_dir") or "").strip()
+        return config
 
     def save_config(self, config: dict[str, Any]) -> None:
-        self._impl._save_config(dict(config))
+        """Persist only the architecture-neutral user configuration."""
+        path = Path(self._impl.CONFIG_FILE)
+        path.parent.mkdir(exist_ok=True, parents=True)
+        payload = {
+            "model_id_or_path": str(config.get("model_id_or_path") or "").strip(),
+            "models_dir": str(config.get("models_dir") or "").strip(),
+            "output_dir": str(config.get("output_dir") or "").strip(),
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self._impl._get_job(job_id)
