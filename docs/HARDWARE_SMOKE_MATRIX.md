@@ -7,8 +7,7 @@ model-driven; this document defines the first real Wan/LTX hardware validation.
 
 ## 1. Prepare isolated runtimes
 
-From a shell with Python/venv support (on NixOS, `nix develop` is the intended
-entry point):
+From any shell with normal Python/venv support:
 
 ```bash
 python tools/prepare_model_runtimes.py all
@@ -21,139 +20,120 @@ export DUCKMOTION_WAN_PYTHON=...
 export DUCKMOTION_LTX_PYTHON=...
 ```
 
-Wan is pinned to Diffusers 0.39.0. LTX-2.5 is not in a stable Diffusers release
-yet, so its environment is pinned to the exact Diffusers-main commit selected
-for this smoke baseline rather than floating with `main`.
+Wan is pinned to Diffusers 0.39.0 and includes `gguf==0.19.0` so both normal
+Diffusers checkpoints and the restored hybrid Diffusers + GGUF path execute in
+the same isolated Wan runtime. LTX-2.5 is pinned to the selected Diffusers-main
+commit because its APIs have not yet landed in a stable release.
 
 Runtime setup never downloads model weights.
 
-Before model loading, start WebbDuck/DuckMotion and check the plugin's:
+Before model loading, start WebbDuck/DuckMotion and check:
 
 ```text
 GET /runtime-readiness
 ```
 
 For each discovered target, `runtime.ready=true` means the worker interpreter
-can import the exact required pipeline APIs and that interpreter sees CUDA. The
-payload also reports its PyTorch/Diffusers versions, GPU name, compute capability
-and VRAM. It is an environment gate, not a generation success claim.
+can import the required runtime APIs and sees CUDA. GGUF models additionally
+probe `WanTransformer3DModel`, `GGUFQuantizationConfig`, and the `gguf` package.
+This is an environment gate, not a generation success claim.
 
 ## 2. Weight preparation
 
-Use the normal Hugging Face cache.
-
-### Wan2.2 TI2V-5B Diffusers — first Wan target
+### Wan2.2 TI2V-5B Diffusers — baseline
 
 ```bash
 hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers
 ```
 
-This package is roughly 34 GB, dramatically smaller than the A14B I2V package.
-DuckMotion's current Diffusers backend can run its text-to-video path. Upstream
-TI2V image conditioning remains known-but-not-runnable until Diffusers/native
-runtime support catches up.
+This is the first plain-Diffusers Wan target. DuckMotion currently exposes its
+text-to-video path.
 
-### Wan2.2 I2V A14B Diffusers — feasibility target
+### Wan2.2 I2V A14B Diffusers — feasibility only
 
 ```bash
 hf download Wan-AI/Wan2.2-I2V-A14B-Diffusers
 ```
 
-This package is roughly 126 GB. Do not interpret discovery/readiness as a claim
-that raw BF16 A14B will be practical on a 16 GB GPU. The first load is explicitly
-a feasibility test of group/sequential/disk offload; a later quantized runtime
-may be the correct production path.
+This is very large and remains an explicit 16 GB feasibility test rather than a
+recommended production checkpoint.
+
+### Wan2.2 GGUF — regression target
+
+Keep the compatible high/low denoiser pair together in any local model root
+scanned by DuckMotion, for example:
+
+```text
+checkpoint/wan/Wan2.2-Enhanced-NSFW-I2V-T2V/
+├── Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_H.gguf
+└── Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_L.gguf
+```
+
+DuckMotion should discover that pair as **one model**. Selecting it persists the
+H-file source path; the Wan worker finds the L mate automatically and injects
+both transformers into the normal Diffusers Wan pipeline. Do not add a UI
+backend selector or separate GGUF configuration field.
+
+For T2V, the default component source is
+`Wan-AI/Wan2.2-T2V-A14B-Diffusers`; for I2V it is
+`Wan-AI/Wan2.2-I2V-A14B-Diffusers`. Those repos supply scheduler/VAE/text
+encoder/config components, while the local GGUF files replace the denoisers.
 
 ### LTX-2.5 distilled/two-stage
-
-Accept the gated model terms first, then:
 
 ```bash
 hf download Lightricks/LTX-2.5-Diffusers \
   --exclude "transformer_full/*"
 ```
 
-The distilled path is the default `transformer/` in `model_index.json`; the full
-SFT transformer is separate and not used by DuckMotion's two-stage distilled
-backend. Excluding it reduces a snapshot from roughly 110 GB to roughly 72 GB.
 The latent upsampler must remain present.
 
 ## 3. Smoke order
 
-Use a cheap canary first, then the checkpoint's normal/reference settings. The
-purpose of a canary is to validate loading, conditioning, artifact writing and
-cleanup without spending the full reference runtime on a broken setup.
-
 | Order | Target | Workflow | Canary | Reference gate |
 |---|---|---|---|---|
-| 1 | Wan2.2 TI2V-5B | T2V | 640x384, 33 frames, 24 fps, seed 0 | 1280x704, 121 frames, 24 fps, published/model defaults |
-| 2 | Wan2.2 I2V A14B | I2V | source image, 512x320, 17 frames, seed 0 | only attempt normal settings if the 16 GB load/offload path is viable |
-| 3 | LTX-2.5 | T2V + audio | final 768x512, 33 frames, 24 fps, seed 0 | final 1536x1024, 121 frames, two-stage distilled schedule |
-| 4 | LTX-2.5 | I2V + audio | same canary dimensions with a source image | reference-size I2V only after T2V passes |
+| 1 | Wan2.2 TI2V-5B | T2V | 640x384, 33 frames, seed 0 | 1280x704, 121 frames |
+| 2 | Wan2.2 paired GGUF | advertised T2V/I2V | 512-640px short clip, seed 0 | prove H+L load without stock transformer download |
+| 3 | Wan2.2 I2V A14B BF16 | I2V | 512x320, 17 frames | only if 16 GB path is viable |
+| 4 | LTX-2.5 | T2V + audio | 768x512, 33 frames | 1536x1024, 121 frames |
+| 5 | LTX-2.5 | I2V + audio | same canary with source image | reference-size only after T2V passes |
 
-Canary dimensions still obey each descriptor's constraints:
-
-- Wan dimensions divisible by 16; frame count `4k+1`;
-- LTX final dimensions divisible by 64; frame count `8k+1`.
-
-For LTX, do **not** replace the explicit distilled sigma schedules with an
-arbitrary low step count for the canary. Reduce dimensions/frames instead; the
-sampling schedule is model semantics.
+Canary dimensions still obey model constraints: Wan uses dimensions divisible by
+16 and `4k+1` frames; LTX uses final dimensions divisible by 64 and `8k+1`
+frames. LTX keeps its explicit distilled sigma schedule even for canaries.
 
 ## 4. API-driven runner
 
-`tools/run_hardware_smoke.py` exercises DuckMotion through its mounted WebbDuck
-plugin API. It does not import Wan/LTX implementation modules directly, so a pass
-covers model selection/config, readiness, source staging, generic job
-coordination, GPU lease handling, backend routing, persisted job state and
-gallery artifact normalization.
-
-Safe preflight only:
+Safe preflight:
 
 ```bash
 python tools/run_hardware_smoke.py
 ```
 
-The default API base is:
-
-```text
-http://127.0.0.1:8010/plugins/web/duckmotion/api
-```
-
-Preflight requires target weights to be **fully cached locally**. A repo that is
-merely reachable from Hugging Face is reported `BLOCKED`; the runner will not
-silently start a 34-126 GB download through `from_pretrained`.
-
-Run the practical canaries only:
+The runner can already target a discovered GGUF source explicitly through the
+existing Wan override arguments while this regression is being validated. For a
+T2V-capable GGUF checkpoint:
 
 ```bash
-python tools/run_hardware_smoke.py --execute
+python tools/run_hardware_smoke.py \
+  --execute \
+  --wan-5b-model "/path/to/..._H.gguf" \
+  --only wan-ti2v-5b-canary
 ```
 
-Plain `--execute` deliberately skips:
-
-- Wan2.2 I2V A14B feasibility;
-- Wan2.2 TI2V-5B reference-size 1280x704/121-frame gate;
-- LTX-2.5 reference-size 1536x1024/121-frame gate.
-
-Those require an additional explicit acknowledgement:
+For an I2V-capable GGUF checkpoint:
 
 ```bash
-python tools/run_hardware_smoke.py --execute --include-heavy
+python tools/run_hardware_smoke.py \
+  --execute --include-heavy \
+  --wan-i2v-model "/path/to/..._H.gguf" \
+  --only wan-i2v-a14b-canary
 ```
 
-Rows can also be isolated while debugging:
-
-```bash
-python tools/run_hardware_smoke.py --execute --only wan-ti2v-5b-canary
-python tools/run_hardware_smoke.py --execute --only ltx25-t2v-canary
-python tools/run_hardware_smoke.py --execute --only ltx25-i2v-canary
-```
-
-The runner stages one deterministic synthetic input image through DuckMotion's
-normal `/staging/upload` route, restores the original DuckMotion config when it
-finishes, removes the temporary staged image, requests an engine unload after
-every row, and writes its JSON report incrementally under `smoke_reports/`.
+The row names predate restored GGUF discovery; the selected public model/source
+is what determines execution. A follow-up runner cleanup may rename/add dedicated
+GGUF rows after the first real hardware result, but GGUF execution itself must
+not depend on such UI/test naming.
 
 ## 5. Pass conditions
 
@@ -161,55 +141,29 @@ every row, and writes its JSON report incrementally under `smoke_reports/`.
 
 A row passes only when:
 
-- the isolated worker actually sees the RTX 5070 Ti;
+- the isolated worker sees the RTX 5070 Ti;
 - the correct T2V or I2V pipeline loads;
+- GGUF rows load the local H/L pair with `from_single_file()`;
+- GGUF rows do **not** fetch the stock second transformer when the L mate exists;
 - requested conditioning is honored;
-- MP4 and poster are written;
-- job/gallery metadata records the selected public model and normalized params;
-- cancellation/job state remains functional;
-- the worker exits and GPU memory/lease are released.
+- MP4/poster/metadata are written;
+- the worker exits and GPU lease/memory are released.
 
 ### LTX-2.5
 
-A row additionally requires:
+A row additionally requires stage-1 latent generation, 2x latent upsample,
+stage-2 distilled refinement, synchronized audio, and normalized final output.
 
-- stage-1 latent generation;
-- 2x latent spatial upsample;
-- stage-2 distilled-sigma refinement;
-- synchronized audio produced and muxed into the output;
-- final dimensions/frame count match normalized model constraints.
-
-## 6. What to record
-
-For every run record:
-
-- public selected-model name;
-- worker Python, PyTorch and Diffusers version;
-- GPU name/compute capability/VRAM;
-- checkpoint source/cache location;
-- load time and generation time;
-- peak host RAM if available;
-- offload mode/fallbacks;
-- requested vs normalized dimensions/frames/FPS/seed;
-- output video/poster/metadata paths;
-- audio presence/sample rate for LTX;
-- CUDA memory state after worker exit/model switch.
-
-The runner automatically records readiness diagnostics, normalized persisted
-job params, returned output/gallery metadata and end-to-end job elapsed time.
-Worker-specific load timing, peak host RAM and external CUDA-memory observations
-can be added after the first real run shows which measurements are most useful.
-
-## 7. Failure classification
+## 6. Failure classification
 
 Classify failures before changing generic architecture:
 
-1. **runtime** — missing import/version/CUDA;
-2. **weights** — gated/missing/incomplete snapshot;
+1. **runtime** — missing import/version/CUDA/GGUF package;
+2. **weights** — missing/gated/incomplete snapshot or missing GGUF pair mate;
 3. **memory** — VRAM/host-RAM/offload failure;
 4. **pipeline API** — upstream Diffusers behavior/signature drift;
-5. **adapter** — DuckMotion request/result translation bug;
+5. **adapter** — DuckMotion request/result/pair translation bug;
 6. **model behavior** — generation completes but output/conditioning is invalid.
 
-Do not expose Wan/LTX/runtime selectors to solve a failure. Fix the responsible
-backend/runtime or adjust the model's public capabilities/constraints.
+Do not expose Wan/LTX/runtime/format selectors to solve a failure. Fix the
+responsible descriptor/backend/runtime instead.
