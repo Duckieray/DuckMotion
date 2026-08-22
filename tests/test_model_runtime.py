@@ -40,18 +40,22 @@ def test_detects_wan_i2v_and_requires_source_image(tmp_path):
     assert detection["method"] == "local_config"
 
 
-def test_detects_ltx25_with_t2v_i2v_and_audio(tmp_path):
+def test_detects_ltx25_with_live_t2v_i2v_and_audio(tmp_path):
     _model_index(tmp_path, "LTX2ImageToVideoPipeline")
     descriptor = describe_video_model(str(tmp_path), name="LTX-2.5")
     assert descriptor.architecture == "ltx25"
     assert descriptor.backend == "ltx25_isolated"
     assert descriptor.capabilities.text_to_video is True
     assert descriptor.capabilities.image_to_video is True
+    assert descriptor.capabilities.video_to_video is False
     assert descriptor.capabilities.audio_output is True
+    assert descriptor.capabilities.negative_prompt is False
     assert descriptor.capabilities.source_image_required is False
     assert descriptor.constraints["dimension_multiple"] == 32
     assert descriptor.constraints["frame_count_remainder"] == 1
-    assert descriptor.supported is False
+    assert descriptor.defaults["num_frames"] == 121
+    assert descriptor.defaults["fps"] == 24
+    assert descriptor.supported is True
 
 
 def test_existing_wan_backend_remains_runnable(tmp_path):
@@ -71,12 +75,11 @@ def test_public_descriptor_hides_architecture_and_backend():
     descriptor = describe_video_model(
         "Lightricks/LTX-2.5-Diffusers",
         name="LTX-2.5",
-        defaults={"fps": 24},
     )
     payload = descriptor.to_public_dict()
     assert payload["capabilities"]["text_to_video"] is True
     assert payload["defaults"]["fps"] == 24
-    assert payload["supported"] is False
+    assert payload["supported"] is True
     assert "architecture" not in payload
     assert "backend" not in payload
 
