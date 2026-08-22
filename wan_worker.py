@@ -59,7 +59,13 @@ def _load_pipeline(model_path: str, image_to_video: bool, dtype):
         return cls.from_pretrained(model_path, torch_dtype=dtype, **kwargs)
 
 
-def _configure_memory(pipe, device: str, total_vram_gb: float, output_dir: Path) -> str:
+def _configure_memory(
+    pipe,
+    device: str,
+    total_vram_gb: float,
+    output_dir: Path,
+    model_path: str,
+) -> str:
     if device != "cuda":
         pipe.to("cpu")
         return "cpu"
@@ -77,7 +83,7 @@ def _configure_memory(pipe, device: str, total_vram_gb: float, output_dir: Path)
                 "use_stream": False,
                 "low_cpu_mem_usage": True,
             }
-            source_size = _source_size_gb(str(getattr(pipe, "_name_or_path", "") or ""))
+            source_size = _source_size_gb(model_path)
             system_ram = _system_memory_gb()
             if source_size and system_ram and source_size > system_ram * 0.80:
                 disk_dir = output_dir / ".wan_offload"
@@ -141,7 +147,11 @@ def _run(request: dict, output_dir: Path) -> dict:
     num_frames = _snap_frames(int(request.get("num_frames") or 81))
     fps = int(request.get("fps") or 16)
     steps = max(1, int(request.get("num_inference_steps") or 30))
-    guidance = float(request.get("guidance_scale") if request.get("guidance_scale") is not None else 5.0)
+    guidance = float(
+        request.get("guidance_scale")
+        if request.get("guidance_scale") is not None
+        else 5.0
+    )
     seed = int(request.get("seed") if request.get("seed") is not None else 0)
 
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -158,7 +168,7 @@ def _run(request: dict, output_dir: Path) -> dict:
 
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
     output_dir.mkdir(parents=True, exist_ok=True)
-    offload = _configure_memory(pipe, "cuda", total_vram_gb, output_dir)
+    offload = _configure_memory(pipe, "cuda", total_vram_gb, output_dir, model_path)
 
     generator = torch.Generator("cuda").manual_seed(seed)
     kwargs = {
