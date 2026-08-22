@@ -73,9 +73,11 @@ class VideoRuntimeSurfaces:
             return False, f"No runnable backend is installed for video model '{descriptor.name}'."
         try:
             self.register_backends()
-            self.resolver.resolve(descriptor)
+            readiness = self.resolver.readiness(descriptor)
         except Exception as exc:
             return False, str(exc)
+        if not readiness.get("ready"):
+            return False, str(readiness.get("reason") or "Selected model runtime is not ready.")
         return True, None
 
     def _snapshot(self) -> dict[str, Any]:
