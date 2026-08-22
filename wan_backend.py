@@ -51,6 +51,5 @@ def ensure_registered(implementation: Any) -> WanDiffusersBackend:
     global _backend
     if _backend is None or _backend._impl is not implementation:
         _backend = WanDiffusersBackend(implementation)
-    if _backend.backend_id not in backend_resolver.ids():
-        backend_resolver.register(_backend)
+    backend_resolver.register(_backend)
     return _backend
