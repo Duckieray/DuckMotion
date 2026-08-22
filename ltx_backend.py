@@ -47,8 +47,9 @@ class LTX25IsolatedBackend(VideoBackend):
             return dict(self._readiness_payload)
 
         probe = (
-            "from diffusers import LTX2ImageToVideoPipeline, LTX2Pipeline; "
-            "from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES; "
+            "from diffusers import LTX2ImageToVideoPipeline, LTX2LatentUpsamplePipeline, LTX2Pipeline; "
+            "from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel; "
+            "from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES, STAGE_2_DISTILLED_SIGMA_VALUES; "
             "from diffusers.utils import encode_video"
         )
         try:
@@ -87,13 +88,17 @@ class LTX25IsolatedBackend(VideoBackend):
 
         is_cancelled: Callable[[], bool] | None = kwargs.get("is_cancelled")
         defaults = descriptor.defaults or {}
-        seed = int(request.get("seed") if request.get("seed") is not None else int(time.time_ns() & 0xFFFFFFFF))
+        seed = int(
+            request.get("seed")
+            if request.get("seed") is not None
+            else int(time.time_ns() & 0xFFFFFFFF)
+        )
         payload = {
             "model_path": descriptor.source,
             "prompt": str(request.get("prompt") or "").strip(),
             "input_image": str(request.get("image_path") or "").strip() or None,
-            "width": int(request.get("width") or defaults.get("width") or 768),
-            "height": int(request.get("height") or defaults.get("height") or 512),
+            "width": int(request.get("width") or defaults.get("width") or 1536),
+            "height": int(request.get("height") or defaults.get("height") or 1024),
             "num_frames": int(request.get("num_frames") or defaults.get("num_frames") or 121),
             "fps": float(request.get("fps") or defaults.get("fps") or 24),
             "seed": seed,
@@ -103,7 +108,7 @@ class LTX25IsolatedBackend(VideoBackend):
 
         python_exe = os.getenv("DUCKMOTION_LTX_PYTHON") or sys.executable
         worker = Path(__file__).with_name("ltx_worker.py")
-        timeout_seconds = max(60.0, float(os.getenv("DUCKMOTION_LTX_TIMEOUT_SECONDS", "3600")))
+        timeout_seconds = max(60.0, float(os.getenv("DUCKMOTION_LTX_TIMEOUT_SECONDS", "7200")))
 
         with tempfile.TemporaryDirectory(prefix="duckmotion_ltx_") as tmp_raw:
             tmp = Path(tmp_raw)
@@ -114,7 +119,16 @@ class LTX25IsolatedBackend(VideoBackend):
 
             with log_path.open("w", encoding="utf-8") as log_file:
                 proc = subprocess.Popen(
-                    [python_exe, str(worker), "--request", str(request_path), "--result", str(result_path), "--output-dir", str(output_dir)],
+                    [
+                        python_exe,
+                        str(worker),
+                        "--request",
+                        str(request_path),
+                        "--result",
+                        str(result_path),
+                        "--output-dir",
+                        str(output_dir),
+                    ],
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -130,20 +144,35 @@ class LTX25IsolatedBackend(VideoBackend):
                         raise RuntimeError("LTX generation cancelled")
                     if time.monotonic() - started > timeout_seconds:
                         proc.kill()
-                        raise RuntimeError(f"LTX runtime timed out after {int(timeout_seconds)} seconds")
+                        raise RuntimeError(
+                            f"LTX runtime timed out after {int(timeout_seconds)} seconds"
+                        )
                     time.sleep(0.5)
 
-            logs = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+            logs = (
+                log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+                if log_path.exists()
+                else []
+            )
             if not result_path.exists():
                 raise RuntimeError(
-                    f"LTX runtime exited without a result (code {proc.returncode}).\n" + "\n".join(logs[-20:])
+                    f"LTX runtime exited without a result (code {proc.returncode}).\n"
+                    + "\n".join(logs[-20:])
                 )
             result = json.loads(result_path.read_text(encoding="utf-8"))
             if not result.get("ok"):
                 raise RuntimeError(
-                    (str(result.get("error") or "LTX runtime failed") + "\n" + "\n".join(logs[-20:])).strip()
+                    (
+                        str(result.get("error") or "LTX runtime failed")
+                        + "\n"
+                        + "\n".join(logs[-20:])
+                    ).strip()
                 )
             return result
+
+    def unload(self) -> None:
+        # LTX is process-isolated; worker exit releases model resources.
+        return None
 
 
 _backend = LTX25IsolatedBackend()
