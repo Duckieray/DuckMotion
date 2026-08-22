@@ -1,17 +1,16 @@
 # Model-Driven Video Architecture
 
-Status: **runtime architecture implemented; capability-driven UI cutover pending**
+Status: **runtime and capability-driven UI implemented; real-model smoke validation pending**
 
-DuckMotion follows the same product rule as WebbDuck's architecture-agnostic
-image generation design:
+DuckMotion follows the same checkpoint-first rule as WebbDuck:
 
 > The user selects a model. DuckMotion determines capabilities, defaults,
-> constraints, and runtime backend automatically.
+> constraints, readiness, and runtime automatically.
 
-Architecture/backend identifiers are internal routing metadata and are not
+Architecture/backend identifiers are internal routing metadata. They are never
 required user choices.
 
-## Implemented Runtime Flow
+## Implemented Flow
 
 ```text
 selected model
@@ -19,93 +18,100 @@ selected model
     v
 model discovery / descriptor
     |
-    +-- capabilities
+    +-- runnable capabilities
     +-- defaults
     +-- constraints
     +-- readiness
     |
     v
-generic API + VideoJobCoordinator
+capability-driven browser + generic API
+    |
+    v
+VideoJobCoordinator
     |
     v
 VideoBackendResolver
     |
-    +--> isolated Wan backend/worker
-    `--> isolated LTX-2.5 backend/worker
+    +--> isolated Wan worker
+    `--> isolated LTX-2.5 worker
     |
     v
-generic storage/gallery artifacts
+generic storage / jobs / gallery
 ```
 
-The former monolithic Wan `backend.py` has been removed. No generic runtime,
-route, storage, or job code depends on a Wan implementation module.
+The former monolithic Wan `backend.py` has been removed. Generic runtime,
+router, storage, job, and UI code do not dispatch on video architecture names.
 
 ## Product Contract
 
 Normal generation must not ask the user to choose:
 
-- Wan vs LTX vs another architecture;
-- Diffusers vs a reference runtime;
+- architecture family;
+- Diffusers/reference runtime implementation;
 - quantization/loading implementation;
-- in-process vs subprocess execution;
+- in-process/subprocess mode;
 - pipeline class names.
 
-The model profile tells the UI whether source images are required, optional, or
-unsupported and which output/control semantics exist.
+A public capability means the **currently installed backend can execute that
+workflow**. Detection metadata may retain upstream capabilities that are not yet
+runnable, but the UI must not advertise them as working controls.
 
-A public capability means **the currently installed backend can execute that
-workflow**. Detection metadata may retain additional upstream/model capabilities
-that are not yet runnable, but the UI must not offer them as working controls.
+## Public Model Descriptor
 
-## Core Ownership
+The browser consumes architecture-free model payloads:
 
-### Model discovery and descriptors
-
-`model_discovery.py` scans architecture-neutral local roots and the normal
-Hugging Face cache. `model_runtime.py` produces `VideoModelDescriptor` objects
-with public:
-
-- capabilities;
-- defaults;
-- constraints;
-- readiness/support status.
+```json
+{
+  "name": "...",
+  "source": "...",
+  "capabilities": {
+    "text_to_video": true,
+    "image_to_video": false,
+    "video_to_video": false,
+    "audio_output": false,
+    "negative_prompt": true,
+    "source_image_required": false
+  },
+  "defaults": {},
+  "constraints": {},
+  "supported": true
+}
+```
 
 Architecture and backend IDs remain internal.
 
-Discovery evidence should prefer authoritative model/config metadata. Canonical
-repo/model identity is included when a Hugging Face snapshot directory itself is
-only a revision hash.
+## Discovery and Identity
 
-### Backend resolver
+`model_discovery.py` scans architecture-neutral local roots plus the normal
+Hugging Face cache. Canonical repository identity participates in detection so a
+snapshot directory named only by a revision hash does not erase checkpoint
+variant information.
 
-`VideoBackendResolver` maps descriptors to installed backend adapters. Generic
-API/job code never branches on family names.
+The UI persists:
 
-Model switching calls resolver-wide resource cleanup rather than a
-family-specific unload function.
+- canonical `repo_id` for Hugging Face cache models;
+- local filesystem path for local models.
 
-### Job coordination
+That keeps checkpoint-specific defaults and capabilities stable across reloads.
 
-`VideoJobCoordinator` owns:
+## Capability-Driven Browser
 
-- model-capability request validation;
-- generic parameter normalization from descriptor defaults/constraints;
-- persisted job lifecycle;
-- shared WebbDuck GPU lease ownership;
-- backend invocation;
-- normalized artifact metadata.
+The browser uses the unified model catalog as its only model selector.
 
-It does not know Wan or LTX architecture IDs.
+When a model changes, the UI automatically:
 
-### Host integration
+- shows source-image staging only when `image_to_video` is runnable;
+- requires that source only when `source_image_required` is true;
+- allows text-only generation when `text_to_video` is true;
+- shows negative prompt only when supported;
+- applies model defaults;
+- applies `dimension_multiple` and frame modulo/remainder constraints;
+- hides arbitrary step/guidance editing for locked sampling schedules;
+- shows audio-output capability;
+- disables models whose runtime is unavailable.
 
-`host_runtime.py` is the only bridge for WebbDuck runtime-profile and GPU-lease
-services. It contains no video architecture dependencies.
-
-### Storage
-
-`VideoStorageRuntime` owns config, jobs, staging, output directories, and gallery
-persistence. Persisted user configuration is model-neutral:
+No model-family generation defaults are persisted in Setup. The persisted config
+is intentionally small:
 
 ```json
 {
@@ -115,158 +121,103 @@ persistence. Persisted user configuration is model-neutral:
 }
 ```
 
-## Isolated Runtime Contract
+## Runtime Ownership
+
+### Generic layers
+
+- `model_runtime.py`: descriptors, capabilities, backend resolver;
+- `model_discovery.py`: discovery/introspection;
+- `job_runtime.py`: request normalization, job lifecycle, GPU lease ownership;
+- `host_runtime.py`: WebbDuck runtime profile and GPU lease bridge only;
+- `storage_runtime.py`: config/jobs/staging/gallery;
+- `runtime_surfaces.py`: health/config/status;
+- `plugin_backend.py`: generic API composition.
+
+These layers must not import architecture-specific pipeline classes.
+
+### Isolated workers
 
 Architecture-specific ML packages are not installed in WebbDuck's interpreter.
-Each backend launches a dedicated worker interpreter selected by environment:
+Backends launch dedicated worker interpreters selected by:
 
-- `DUCKMOTION_WAN_PYTHON`
-- `DUCKMOTION_LTX_PYTHON`
+- `DUCKMOTION_WAN_PYTHON`;
+- `DUCKMOTION_LTX_PYTHON`.
 
-The parent process retains job/GPU-lease ownership. Worker exit releases model
-resources.
-
-Runtime dependency sets live under `runtime_requirements/`.
+Runtime requirements live under `runtime_requirements/`.
 
 ## Wan
 
-The current Diffusers backend owns the workflows it can actually execute:
+The current Diffusers backend exposes only workflows it can actually run:
 
-- pure Wan text-to-video through `WanPipeline`;
-- pure Wan image-to-video through `WanImageToVideoPipeline`.
+- pure text-to-video through `WanPipeline`;
+- pure image-to-video through `WanImageToVideoPipeline`.
 
-A pure I2V checkpoint marks source image as required.
+Pure I2V requires a source image.
 
-### Wan2.2 TI2V-5B
+### TI2V-5B
 
-The upstream TI2V-5B checkpoint supports both T2V and I2V, but current Diffusers
-`WanPipeline` exposes only text conditioning for this checkpoint. DuckMotion
-therefore advertises:
+The upstream TI2V-5B checkpoint supports T2V and I2V, but current Diffusers
+`WanPipeline` exposes only the text-conditioned path for this checkpoint.
+DuckMotion therefore publicly reports T2V only while retaining internal
+detection metadata that upstream I2V exists.
 
-```json
-{
-  "text_to_video": true,
-  "image_to_video": false,
-  "source_image_required": false
-}
-```
+Published checkpoint defaults are model-specific:
 
-Internal detection metadata records that upstream I2V exists and that the
-current runtime does not implement it. When a native/unified TI2V runtime is
-added later, the public capability can change without altering the generic API
-or UI architecture.
-
-TI2V-5B has checkpoint-specific published defaults rather than inheriting the
-generic Wan I2V profile:
-
-- 1280x704 landscape;
+- 1280x704;
 - 121 frames;
 - 24 fps;
-- 50 inference steps;
+- 50 steps;
 - guidance 5.0.
 
-Turbo variants may override the fast sampling defaults while preserving
-checkpoint-specific dimensions/frame behavior.
+A future runtime that implements TI2V image conditioning can flip the runnable
+capability without changing generic API or UI code.
 
-### Wan constraints and memory
-
-Wan constraints currently include:
-
-- dimensions divisible by 16;
-- frame count `4k+1`.
-
-The worker uses current Diffusers `WanPipeline` / `WanImageToVideoPipeline` and
-owns its memory strategy. On constrained GPUs, automatic placement prefers group
-offloading and can fall back to sequential CPU offload. Large local model packs
-can request disk-backed group offload when their size clearly exceeds practical
-host-memory headroom.
-
-This is a safety/placement mechanism, not a claim that every A14B BF16 package is
-practical on a 16 GB GPU. That requires real hardware validation.
+Wan dimensions use a 16-pixel grid and frame counts use `4k+1`.
 
 ## LTX-2.5
 
-LTX-2.5 descriptors expose:
+LTX-2.5 publicly exposes:
 
 - text-to-video;
-- image-to-video;
-- synchronized audio output;
-- optional source image.
+- image-to-video with optional source image;
+- synchronized audio output.
 
-The production worker follows the reference distilled two-stage recipe:
+The worker follows the distilled two-stage path:
 
-1. stage-1 diffusion at half final resolution with `DISTILLED_SIGMA_VALUES`;
-2. 2x latent spatial upsampling with `LTX2LatentUpsamplerModel`;
-3. full-resolution refinement with `STAGE_2_DISTILLED_SIGMA_VALUES`;
+1. half-resolution stage-1 diffusion;
+2. 2x latent spatial upsampling;
+3. full-resolution stage-2 refinement;
 4. synchronized audio/video encoding.
 
-Consequently:
+Descriptor semantics therefore describe final output:
 
-- selected width/height mean **final output size**;
-- final dimensions are divisible by 64 so half-resolution stage 1 remains valid;
-- frame count follows `8k+1`;
-- `sampling_schedule_locked` is true;
-- the distilled sigma schedules are model semantics, not arbitrary UI step
-  schedules.
+- default 1536x1024;
+- 121 frames;
+- 24 fps;
+- final dimensions divisible by 64;
+- frame count `8k+1`;
+- `generation_stages = 2`;
+- `sampling_schedule_locked = true`.
 
-LTX currently tracks Diffusers main in its isolated environment. On a 16 GB GPU,
-the worker defaults to sequential CPU offload.
+The browser hides arbitrary step/guidance editing for this locked schedule.
 
-## Public API Principle
+## Extension Rule
 
-Public model payloads should expose enough information for a capability-driven
-client while hiding implementation choices:
+A new video model/runtime should normally require only:
 
-```json
-{
-  "name": "...",
-  "source": "...",
-  "capabilities": {},
-  "defaults": {},
-  "constraints": {},
-  "supported": true
-}
-```
-
-Clients must not need an architecture/backend selector to generate.
-
-## Remaining UI Cutover
-
-The runtime architecture is model-driven, but the browser UI may still contain
-older Wan-shaped presentation. The final UI pass should:
-
-1. use the unified model catalog as the only model selector;
-2. render source-image staging only when the model supports/needs it;
-3. allow text-only generation when `text_to_video` is true;
-4. render negative-prompt controls only when supported;
-5. apply model defaults/constraint granularity automatically;
-6. hide/lock arbitrary sampling controls when `sampling_schedule_locked` is true;
-7. show audio/output capabilities without exposing backend names;
-8. remove any remaining Wan-specific labels or engine settings.
-
-No additional runtime family tabs should be introduced during that rewrite.
-
-## Future Extension Rules
-
-A new video architecture or alternative runtime should normally require:
-
-1. descriptor detection/capability/default/constraint rules;
+1. detection and descriptor metadata;
 2. a backend adapter;
-3. an isolated worker/runtime requirements when dependencies differ;
-4. focused tests;
-5. zero generic router/job/storage family branching.
+3. an isolated worker/runtime environment when needed;
+4. focused tests.
 
-A new backend may also unlock a workflow already known in detection metadata,
-such as TI2V-5B image conditioning, without changing the generic public contract.
+It must not require a new runtime-family tab or architecture branch in generic
+router/job/storage/UI code.
 
-Unknown assets must fail with detection/readiness diagnostics rather than being
-guessed as Wan or another existing architecture.
+## Validation Milestone
 
-## Validation
+Contract tests cover model discovery, public capabilities, resolver/readiness,
+generic job normalization, process isolation, memory policy, storage, and the
+capability-driven UI contract.
 
-Contract/unit tests cover discovery, descriptors, resolver/readiness, generic job
-normalization, worker serialization, memory/offload choices, storage surfaces,
-and the permanent deletion of the legacy backend module.
-
-Real-model GPU smoke tests remain a separate milestone. Do not infer hardware
-success from backend registration alone.
+Real-model GPU validation is still intentionally separate. Backend registration
+or browser readiness must not be described as a successful hardware smoke test.
