@@ -65,6 +65,12 @@ def test_hf_cache_uses_repo_identity_to_detect_wan_ti2v_in_revision_snapshot(tmp
     assert item["capabilities"]["text_to_video"] is True
     assert item["capabilities"]["image_to_video"] is False
     assert item["capabilities"]["source_image_required"] is False
+    assert item["defaults"]["width"] == 1280
+    assert item["defaults"]["height"] == 704
+    assert item["defaults"]["num_frames"] == 121
+    assert item["defaults"]["fps"] == 24
+    assert item["defaults"]["num_inference_steps"] == 50
+    assert item["defaults"]["guidance_scale"] == 5.0
     assert item["supported"] is True
 
 
