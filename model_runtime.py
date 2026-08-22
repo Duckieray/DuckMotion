@@ -116,7 +116,7 @@ def detect_video_architecture(
     *,
     name: str | None = None,
 ) -> tuple[str, VideoCapabilities, dict[str, Any]]:
-    """Infer model family and runnable workflow capabilities."""
+    """Infer model family and workflows runnable by the installed backend."""
     tokens, detection = _source_tokens(str(source or ""), name=name)
 
     if "ltx-2.5" in tokens or "ltx2.5" in tokens or "ltx25" in tokens or "ltx2" in tokens:
@@ -140,8 +140,7 @@ def detect_video_architecture(
             or "text_image_to_video" in tokens
         )
         is_i2v = (
-            is_ti2v
-            or "imagetovideo" in tokens
+            "imagetovideo" in tokens
             or "image-to-video" in tokens
             or "image_to_video" in tokens
             or "i2v" in tokens
@@ -156,13 +155,22 @@ def detect_video_architecture(
         )
 
         if is_ti2v:
+            # The upstream Wan2.2 TI2V-5B model supports both workflows, but
+            # current Diffusers WanPipeline exposes only text conditioning for
+            # this checkpoint. Keep the latent model capability as detection
+            # metadata while the public/runnable capability stays honest.
             capabilities = VideoCapabilities(
                 text_to_video=True,
-                image_to_video=True,
+                image_to_video=False,
                 negative_prompt=True,
                 source_image_required=False,
             )
             variant = "ti2v"
+            detection = {
+                **detection,
+                "upstream_image_to_video": True,
+                "runtime_image_to_video": False,
+            }
         elif is_t2v and not is_i2v:
             capabilities = VideoCapabilities(
                 text_to_video=True,
@@ -218,6 +226,7 @@ def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
             "frame_count_modulo": 8,
             "frame_count_remainder": 1,
             "generation_stages": 2,
+            "sampling_schedule_locked": True,
         }
     if architecture == "wan22":
         return {
