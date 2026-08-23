@@ -13,6 +13,12 @@ subset of Comfy startup that activates CLI-selected DynamicVRAM. Parsing flags
 alone is insufficient: ``comfy-aimdo`` must be initialized, devices registered,
 and ``CoreModelPatcher`` switched to the dynamic implementation before model
 objects are created.
+
+Normal Comfy prompt execution also keeps node execution inside
+``torch.inference_mode()``. The embedded worker dispatches nodes directly, so the
+launcher mirrors that execution contract as well. Without it, sampler outputs can
+be inference tensors that a later decode/output node tries to update outside
+InferenceMode, which PyTorch rejects.
 """
 
 from __future__ import annotations
@@ -254,10 +260,35 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
     return nodes
 
 
+def _install_inference_node_dispatch() -> None:
+    """Run direct Comfy node calls under the executor's inference-mode contract.
+
+    Comfy's normal ``PromptExecutor`` wraps graph execution in
+    ``torch.inference_mode()``. DuckMotion calls the registered nodes directly,
+    so without this adapter an inference tensor produced by a sampler can later
+    be mutated by another node outside InferenceMode. Keep the adapter at the
+    dispatch boundary so every current/future profile node gets identical
+    semantics without recipe-specific tensor cloning.
+    """
+    original_call_node = recipe_worker._call_node
+    if getattr(original_call_node, "_duckmotion_inference_dispatch", False):
+        return
+
+    def call_node_inference(nodes_module, node_name: str, **kwargs):
+        import torch
+
+        with torch.inference_mode():
+            return original_call_node(nodes_module, node_name, **kwargs)
+
+    call_node_inference._duckmotion_inference_dispatch = True
+    recipe_worker._call_node = call_node_inference
+
+
 def main() -> int:
     # Keep profile semantics in one implementation while injecting only the
-    # runtime-memory composition point.
+    # embedded-Comfy runtime composition points.
     recipe_worker._prepare_comfy = _prepare_comfy
+    _install_inference_node_dispatch()
     return recipe_worker.main()
 
 
