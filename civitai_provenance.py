@@ -20,6 +20,7 @@ from provider_credentials import provider_token
 
 
 API_BY_HASH = "https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
+DOWNLOAD_BY_VERSION = "https://civitai.com/api/download/models/{version_id}?fileId={file_id}"
 MAX_API_BYTES = 8 * 1024 * 1024
 MAX_RECIPE_BYTES = 32 * 1024 * 1024
 USER_AGENT = "DuckMotion/1 checkpoint-provenance"
@@ -66,6 +67,32 @@ def _safe_filename(name: str, fallback: str) -> str:
     value = Path(str(name or "")).name
     value = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
     return value or fallback
+
+
+def _file_download_url(item: Mapping[str, Any], version_id: Any) -> str:
+    """Return a file-specific Civitai download URL when identity is available.
+
+    Civitai model-version responses historically exposed version-level download
+    URLs that could be re-resolved to a different primary file. Current Civitai
+    code pins per-file URLs with ``?fileId=<id>``. Build that canonical URL from
+    the response's version/file identities instead of trusting a possibly stale
+    or unpinned ``downloadUrl`` field.
+    """
+    try:
+        normalized_version_id = int(version_id)
+        normalized_file_id = int(item.get("id"))
+    except (TypeError, ValueError):
+        normalized_version_id = 0
+        normalized_file_id = 0
+
+    if normalized_version_id > 0 and normalized_file_id > 0:
+        return DOWNLOAD_BY_VERSION.format(
+            version_id=normalized_version_id,
+            file_id=normalized_file_id,
+        )
+
+    published = str(item.get("downloadUrl") or "").strip()
+    return published if published and _trusted_civitai_url(published) else ""
 
 
 def _download_recipe(url: str, destination: Path) -> Path:
@@ -145,9 +172,9 @@ def resolve_civitai_provenance(
                 continue
         except (TypeError, ValueError):
             pass
-        download_url = str(item.get("downloadUrl") or "").strip()
+        download_url = _file_download_url(item, version_id)
         if not download_url:
-            recipe_errors.append(f"{name}: no download URL was published")
+            recipe_errors.append(f"{name}: no trustworthy file-specific download URL could be derived")
             continue
         destination = provider_root / _safe_filename(name, f"recipe-{index}.json")
         try:
