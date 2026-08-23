@@ -6,6 +6,13 @@ hardware/runtime policy, mirroring WebbDuck's heavyweight Diffusers workers:
 choose a conservative policy from VRAM size, keep one-shot caches disabled, and
 let the backend's native memory manager offload/slice rather than requiring users
 to tune environment variables manually.
+
+Comfy is embedded as a Python library here rather than launched through its
+``main.py`` entrypoint. That means the launcher must explicitly perform the small
+subset of Comfy startup that activates CLI-selected DynamicVRAM. Parsing flags
+alone is insufficient: ``comfy-aimdo`` must be initialized, devices registered,
+and ``CoreModelPatcher`` switched to the dynamic implementation before model
+objects are created.
 """
 
 from __future__ import annotations
@@ -84,9 +91,11 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
     if selected in {"performance", "none", "off", "unrestricted"}:
         return {
             "name": "performance",
+            # DynamicVRAM is enabled by default by current Comfy on supported
+            # NVIDIA hardware. Explicitly disable it for the unrestricted tier.
             # The worker is one generation per process, so retaining Comfy node
             # outputs can only increase memory usage and never helps a later job.
-            "comfy_args": ("--cache-none",),
+            "comfy_args": ("--disable-dynamic-vram", "--cache-none"),
             "vram_headroom_gb": 0.0,
             "dynamic_vram": False,
             "aggressive_offload": False,
@@ -98,8 +107,89 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
     )
 
 
+def _initialize_aimdo_control():
+    """Mirror Comfy's pre-node DynamicVRAM controller initialization.
+
+    ``main.py`` enables argument parsing before importing ``comfy.cli_args`` and
+    initializes the global comfy-aimdo controller before importing the node/model
+    stack. Embedded users do not get either side effect automatically.
+    """
+    import comfy.options
+
+    comfy.options.enable_args_parsing()
+    from comfy.cli_args import args, enables_dynamic_vram
+    import comfy_aimdo.control as aimdo_control
+
+    if enables_dynamic_vram():
+        simple_vram_headroom = (
+            None if args.reserve_vram is None else int(args.reserve_vram * 1024**3)
+        )
+        try:
+            aimdo_control.init(
+                simple_vram_headroom=simple_vram_headroom,
+                nvml_pressure=not args.disable_nvml_pressure,
+            )
+        except TypeError:
+            # Support the older comfy-aimdo protocols accepted by the pinned
+            # Comfy entrypoint as well.
+            try:
+                aimdo_control.init(simple_vram_headroom=simple_vram_headroom)
+            except TypeError:
+                aimdo_control.init()
+
+    return args, enables_dynamic_vram, aimdo_control
+
+
+def _activate_dynamic_vram(args, enables_dynamic_vram, aimdo_control) -> bool:
+    """Register devices and install Comfy's dynamic model patcher.
+
+    This is the second half of the DynamicVRAM startup normally performed by
+    Comfy ``main.py`` after ``nodes`` imports its model-management modules.
+    """
+    import comfy.memory_management as memory_management
+    import comfy.model_management as model_management
+    import comfy.model_patcher as model_patcher
+
+    supported = bool(model_management.is_nvidia())
+    if model_management.is_amd():
+        supported = getattr(model_management, "rocm_version", (0, 0)) >= (7, 14)
+
+    requested = bool(args.enable_dynamic_vram) or (
+        enables_dynamic_vram() and supported
+    )
+    if not requested:
+        return False
+
+    # Match the pinned Comfy guard. DuckMotion's prepared ConvRot runtime uses
+    # torch 2.11, but keep this fail-safe for advanced runtime overrides.
+    if (
+        not args.enable_dynamic_vram
+        and getattr(model_management, "torch_version_numeric", (0, 0)) < (2, 8)
+    ):
+        return False
+
+    device_headroom = int(float(args.vram_headroom) * 1024**3)
+    try:
+        initialized = aimdo_control.init_devices(
+            (device.index, device_headroom)
+            for device in model_management.get_all_torch_devices()
+        )
+    except TypeError:
+        # comfy-aimdo 0.4.9 protocol.
+        initialized = aimdo_control.init_devices(
+            device.index for device in model_management.get_all_torch_devices()
+        )
+
+    if not initialized:
+        return False
+
+    model_patcher.CoreModelPatcher = model_patcher.ModelPatcherDynamic
+    memory_management.aimdo_enabled = True
+    return True
+
+
 def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
-    """Initialize pinned Comfy with a VRAM-aware policy before its first import."""
+    """Initialize pinned Comfy with a VRAM-aware policy before model loading."""
     import torch
 
     comfy_root = Path(str(os.getenv("DUCKMOTION_LTX_CONVROT_COMFY_ROOT") or "")).expanduser()
@@ -126,11 +216,32 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
         sys.path.insert(0, str(comfy_root))
 
     # The recipe worker has already consumed its own CLI. Comfy parses argv at
-    # import time, so give it only the hardware policy chosen above.
+    # import time, so give it only the hardware policy chosen above. Crucially,
+    # enable Comfy argument parsing before importing folder_paths/nodes: otherwise
+    # comfy.cli_args silently parses [] and every memory flag is ignored.
     sys.argv = [sys.argv[0], *policy["comfy_args"]]
+    args, enables_dynamic_vram, aimdo_control = _initialize_aimdo_control()
 
     import folder_paths
     import nodes
+
+    dynamic_vram_active = _activate_dynamic_vram(
+        args,
+        enables_dynamic_vram,
+        aimdo_control,
+    )
+    if policy["dynamic_vram"] and not dynamic_vram_active:
+        raise RuntimeError(
+            "The selected ConvRot memory policy requires Comfy DynamicVRAM, "
+            "but the embedded Comfy memory manager did not activate."
+        )
+
+    print(
+        "DuckMotion ConvRot Comfy memory manager: "
+        f"dynamic_vram={'active' if dynamic_vram_active else 'disabled'}; "
+        f"split_attention={bool(args.use_split_cross_attention)}; "
+        f"aggressive_offload={bool(args.disable_smart_memory)}"
+    )
 
     folder_paths.set_output_directory(str(output_dir))
     recipe_worker._add_asset_folder(folder_paths, "diffusion_models", assets["checkpoint"])
