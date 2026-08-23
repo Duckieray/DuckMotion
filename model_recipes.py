@@ -23,6 +23,7 @@ class ExecutionProfile:
     source_format: str
     required_assets: tuple[str, ...] = ()
     evidence_node_types: frozenset[str] = frozenset()
+    required_runtime_nodes: frozenset[str] = frozenset()
 
 
 class ExecutionProfileRegistry:
@@ -82,6 +83,26 @@ class ExecutionProfileRegistry:
 execution_profiles = ExecutionProfileRegistry()
 
 
+_LTX25_CONVROT_EVIDENCE_NODES = frozenset(
+    {
+        "UNETLoader",
+        "CLIPLoader",
+        "VAELoader",
+        "ConditioningZeroOut",
+        "LTXVConditioning",
+        "LTXVEmptyLatentAudio",
+        "LTXVConcatAVLatent",
+        "SamplerCustomAdvanced",
+        "LTXVSeparateAVLatent",
+        "LTXVCropGuides",
+        "LTXVLatentUpsampler",
+        "LatentUpscaleBy",
+        "LatentUpscaleModelLoader",
+        "VAEDecodeTiled",
+        "LTXVAudioVAEDecode",
+    }
+)
+
 LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
     profile_id="ltx25_convrot_two_stage_av",
     architecture="ltx25",
@@ -92,23 +113,19 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "video_vae",
         "audio_vae",
     ),
-    evidence_node_types=frozenset(
+    evidence_node_types=_LTX25_CONVROT_EVIDENCE_NODES,
+    required_runtime_nodes=_LTX25_CONVROT_EVIDENCE_NODES
+    | frozenset(
         {
-            "UNETLoader",
-            "CLIPLoader",
-            "VAELoader",
-            "ConditioningZeroOut",
-            "LTXVConditioning",
-            "LTXVEmptyLatentAudio",
-            "LTXVConcatAVLatent",
-            "SamplerCustomAdvanced",
-            "LTXVSeparateAVLatent",
-            "LTXVCropGuides",
-            "LTXVLatentUpsampler",
-            "LatentUpscaleBy",
-            "LatentUpscaleModelLoader",
-            "VAEDecodeTiled",
-            "LTXVAudioVAEDecode",
+            "LTXVPreprocess",
+            "EmptyLTXVLatentVideo",
+            "LTXVImgToVideoInplace",
+            "RandomNoise",
+            "CFGGuider",
+            "KSamplerSelect",
+            "ManualSigmas",
+            "CreateVideo",
+            "SaveVideo",
         }
     ),
 )
