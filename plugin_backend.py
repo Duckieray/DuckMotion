@@ -16,6 +16,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from job_runtime import VideoJobCoordinator
 from ltx_backend import ensure_registered as ensure_ltx_registered
+from ltx_convrot_backend import ensure_registered as ensure_ltx_convrot_registered
 from model_discovery import discover_video_models
 from model_runtime import backend_resolver, describe_video_model
 from runtime_services import VideoRuntimeServices
@@ -32,6 +33,7 @@ job_coordinator = VideoJobCoordinator(services)
 def _register_installed_backends() -> None:
     ensure_wan_registered()
     ensure_ltx_registered()
+    ensure_ltx_convrot_registered()
 
 
 def _weights_state(item: dict[str, Any]) -> dict[str, Any]:
