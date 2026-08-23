@@ -9,7 +9,6 @@ model version. Model weights are never re-downloaded by this provider.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -17,16 +16,13 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
+from provider_credentials import provider_token
+
 
 API_BY_HASH = "https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
 MAX_API_BYTES = 8 * 1024 * 1024
 MAX_RECIPE_BYTES = 32 * 1024 * 1024
 USER_AGENT = "DuckMotion/1 checkpoint-provenance"
-CIVITAI_TOKEN_ENV_VARS = (
-    "CIVITAI_TOKEN",
-    "CIVITAI_API_KEY",
-    "CIVITAI_API_TOKEN",
-)
 
 
 def _trusted_civitai_url(url: str) -> bool:
@@ -41,11 +37,7 @@ def _trusted_civitai_url(url: str) -> bool:
 
 
 def _civitai_token() -> str:
-    for env_var in CIVITAI_TOKEN_ENV_VARS:
-        token = str(os.getenv(env_var) or "").strip()
-        if token:
-            return token
-    return ""
+    return provider_token("civitai")
 
 
 def _headers(accept: str) -> dict[str, str]:
