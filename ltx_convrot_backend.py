@@ -178,6 +178,8 @@ print(json.dumps(out))
             "reason": reason,
             "source_format": "int8_convrot",
             "execution_profile": profile_id or None,
+            "profile_defaults": dict(profile.defaults) if profile else {},
+            "profile_constraints": dict(profile.constraints) if profile else {},
             "assets": assets,
         }
         self._readiness_key = key
@@ -221,7 +223,8 @@ print(json.dumps(out))
                 f"Execution profile '{profile.profile_id}' worker is missing: {worker}"
             )
         is_cancelled: Callable[[], bool] | None = kwargs.get("is_cancelled")
-        defaults = descriptor.defaults or {}
+        defaults = dict(descriptor.defaults or {})
+        defaults.update(dict(profile.defaults))
         seed = int(
             request.get("seed")
             if request.get("seed") is not None
