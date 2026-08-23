@@ -5,9 +5,9 @@ capabilities). An execution recipe answers *how a supported runtime should run
 it*. Product/display names never participate in recipe selection.
 
 Recipes are declarative contracts. A companion file may name a profile directly,
-or an adapter may infer a profile from trusted structural evidence such as the
-set of node types in an exported workflow. DuckMotion never executes arbitrary
-recipe/workflow code.
+or an adapter may infer a profile from trusted structural and semantic evidence
+in an exported workflow. DuckMotion never executes arbitrary recipe/workflow
+code.
 """
 
 from __future__ import annotations
@@ -28,6 +28,10 @@ class ExecutionProfile:
     # never checkpoint-brand metadata.
     asset_defaults: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     evidence_node_types: frozenset[str] = frozenset()
+    # Distinctive literals that exported-workflow adapters must also observe
+    # before inferring this profile. Explicit duckmotion_recipe manifests do not
+    # need heuristic inference and therefore do not depend on these literals.
+    evidence_literals: frozenset[str] = frozenset()
     required_runtime_nodes: frozenset[str] = frozenset()
     defaults: Mapping[str, Any] = field(default_factory=dict)
     constraints: Mapping[str, Any] = field(default_factory=dict)
@@ -78,6 +82,7 @@ class ExecutionProfileRegistry:
         source_format: str,
         node_types: Iterable[str],
     ) -> ExecutionProfile | None:
+        """Return a unique structural candidate; adapters validate semantics next."""
         evidence = {str(value) for value in node_types if str(value)}
         matches = [
             profile
@@ -152,6 +157,14 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         },
     },
     evidence_node_types=_LTX25_CONVROT_EVIDENCE_NODES,
+    evidence_literals=frozenset(
+        {
+            "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0",
+            "0.85, 0.7250, 0.4219, 0.0",
+            "euler",
+            "bicubic",
+        }
+    ),
     required_runtime_nodes=_LTX25_CONVROT_EVIDENCE_NODES
     | frozenset(
         {
