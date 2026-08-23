@@ -20,7 +20,7 @@ SPEC.loader.exec_module(prepare_assets)
 
 def _generic_recipe(checkpoint_name: str) -> dict:
     names = {
-        "text_encoder": "generic-ltx25-text-encoder.safetensors",
+        "text_encoder": "gemma-ltx25-text-encoder.safetensors",
         "latent_upscaler": "generic-ltx-spatial-upscaler.safetensors",
         "video_vae": "generic-ltx25-video-vae.safetensors",
         "audio_vae": "generic-ltx25-audio-vae.safetensors",
@@ -34,7 +34,7 @@ def _generic_recipe(checkpoint_name: str) -> dict:
                     "models": [
                         {
                             "name": names["text_encoder"],
-                            "url": "https://huggingface.co/example-org/example-model/resolve/main/text_encoders/generic-ltx25-text-encoder.safetensors",
+                            "url": "https://huggingface.co/example-org/example-model/resolve/main/text_encoders/gemma-ltx25-text-encoder.safetensors",
                             "directory": "text_encoders",
                         }
                     ]
