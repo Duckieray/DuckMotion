@@ -5,10 +5,11 @@ Status: **runtime and capability-driven UI implemented; real-model smoke validat
 DuckMotion follows the same checkpoint-first rule as WebbDuck:
 
 > The user selects a model. DuckMotion determines capabilities, readiness,
-> runtime, execution recipe, and support assets automatically.
+> runtime, trusted provenance when needed, execution recipe, and support assets
+> automatically.
 
-Architecture/backend/profile identifiers are internal routing metadata. They are
-never required user choices.
+Architecture/backend/provenance/profile identifiers are internal routing metadata.
+They are never required user choices.
 
 ## Implemented Flow
 
@@ -21,6 +22,12 @@ model discovery / checkpoint descriptor
     +-- architecture + source format (private)
     +-- runnable capabilities
     +-- architecture-level defaults/constraints
+    |
+    +--> optional setup-time provenance resolution
+    |       |
+    |       +-- strong checkpoint fingerprint
+    |       +-- trusted provider identity
+    |       `-- cached declarative recipe candidates
     |
     v
 capability-driven browser + generic API
@@ -39,6 +46,7 @@ VideoBackendResolver
        execution profile registry
              |
              +-- required assets
+             +-- trusted standard asset sources
              +-- required runtime surface
              +-- profile defaults/constraints
              `-- worker entrypoint
@@ -57,6 +65,7 @@ Normal generation must not ask the user to choose:
 - architecture family;
 - Diffusers/reference runtime implementation;
 - quantization/loading implementation;
+- checkpoint provenance provider;
 - execution profile/recipe;
 - in-process/subprocess mode;
 - pipeline class names.
@@ -88,7 +97,8 @@ The browser consumes architecture-free model payloads:
 }
 ```
 
-Architecture, source-format, backend, and execution-profile IDs remain internal.
+Architecture, source-format, backend, provenance-provider, and execution-profile
+IDs remain internal.
 
 ## Discovery and Identity
 
@@ -104,9 +114,10 @@ The UI persists:
 
 For single-file formats, lightweight header metadata and compatible sidecar
 recipe evidence can participate in format detection. Filename hints are only
-compatibility fallbacks; a display/model brand must never select a recipe.
+compatibility fallbacks; a display/model brand must never select provenance or a
+recipe.
 
-## Checkpoint Descriptor vs. Execution Recipe
+## Checkpoint Descriptor vs. Provenance vs. Execution Recipe
 
 `VideoModelDescriptor` describes the checkpoint itself:
 
@@ -119,11 +130,21 @@ compatibility fallbacks; a display/model brand must never select a recipe.
 It must **not** inject defaults merely because one known model using that format
 happens to recommend them.
 
+`CheckpointProvenanceProvider` answers where an exact local checkpoint came from.
+Setup may fingerprint a local file with SHA256 and query registered trusted
+providers. A successful provider can return canonical source metadata and cache
+small declarative recipe candidates.
+
+Provenance is not recipe selection. Provider model/version names, IDs, URLs,
+tags, and descriptions are diagnostics only. Exactly one provider must match; if
+zero or multiple providers match, DuckMotion leaves the model unresolved.
+
 `ExecutionProfile` describes a supported runtime recipe:
 
 - compatible architecture + source format;
 - worker entrypoint;
 - required support-asset roles;
+- trusted standard asset sources;
 - structural evidence used by recipe adapters;
 - required runtime node/API surface;
 - recipe-specific defaults and constraints.
@@ -133,22 +154,39 @@ can share `ltx25/int8_convrot` while requiring different sampling recipes.
 DuckMotion may recognize both checkpoint formats while only one has a currently
 installed profile.
 
-If zero profiles match a recipe, the model remains blocked. If multiple profiles
-match the same structural evidence, DuckMotion refuses to guess.
+The trust chain is intentionally one-way:
 
-## Recipe Inputs
+```text
+strong file identity -> provenance -> declarative recipe evidence -> profile
+```
+
+If zero profiles match a recipe, the model remains blocked. If multiple profiles
+or multiple supported recipe candidates match, DuckMotion refuses to guess.
+
+## Provenance and Recipe Inputs
 
 A companion recipe is declarative evidence only; it is never arbitrary executable
 workflow code.
 
-Two adapters are currently supported for ConvRot:
+Two recipe adapters are currently supported for ConvRot:
 
 1. native `duckmotion_recipe` JSON explicitly naming an installed profile and
    its asset roles;
 2. supported exported-workflow shapes mapped structurally to an installed
    profile by node/model evidence.
 
-The execution profile, not the workflow file, owns the worker implementation.
+When no usable local companion exists, setup may consult registered provenance
+providers. The first built-in provider resolves Civitai model versions by full
+SHA256, verifies the returned version includes an exact matching SHA256 file, and
+caches only small JSON sidecars. The selected checkpoint is never downloaded or
+replaced.
+
+Once a recipe candidate is cached, doctor and runtime readiness use it locally;
+they do not perform provenance network calls or re-hash a large unchanged
+checkpoint.
+
+The execution profile, not the provenance provider or workflow file, owns the
+worker implementation.
 
 ## Capability-Driven Browser
 
@@ -183,6 +221,8 @@ is intentionally small:
 
 - `model_runtime.py`: checkpoint descriptors, capabilities, backend resolver;
 - `model_discovery.py`: architecture-neutral discovery/introspection;
+- `model_provenance.py`: strong fingerprinting, provenance contracts and local cache;
+- `provenance_providers.py`: provenance-provider composition;
 - `model_recipes.py`: execution-profile contracts and registry;
 - `model_asset_providers.py`: normalized support-asset provider registry;
 - `job_runtime.py`: request normalization, job lifecycle, GPU lease ownership;
@@ -190,7 +230,7 @@ is intentionally small:
 - `storage_runtime.py`: config/jobs/staging/gallery;
 - `runtime_surfaces.py`: health/config/status;
 - `plugin_backend.py`: generic API composition;
-- `tools/setup.py`: generic orchestration of runtime, asset, and plugin setup.
+- `tools/setup.py`: generic orchestration of runtime, provenance/assets, and plugin setup.
 
 These layers must not branch on community/vendor model names.
 
@@ -219,7 +259,7 @@ Runtime requirements live under `runtime_requirements/`.
 - resolved execution profile;
 - declared asset roles;
 - already-resolved paths;
-- optional trusted source URLs;
+- optional trusted recipe/profile source URLs;
 - provider-owned asset cache.
 
 The tool itself does not contain an LTX/REDGraft branch. Future model families can
@@ -227,6 +267,9 @@ register providers without adding another setup mode.
 
 Support assets may live anywhere under configured/inferred model roots or the
 provider cache. Special Comfy-style folder layouts are not a user requirement.
+An execution profile may supply a trusted standard asset source only when the
+recipe omits that role or names the same standard asset. A differently named
+custom asset is never silently substituted.
 
 ## Wan
 
@@ -296,7 +339,8 @@ It owns:
 
 - its worker entrypoint;
 - required pinned-Comfy nodes;
-- text encoder / latent upscaler / video VAE / audio VAE asset roles;
+- text encoder / latent upscaler / video VAE / audio VAE asset roles and trusted
+  standard sources;
 - 1152x768 / 241-frame / 24-fps defaults;
 - the fixed two-stage AV sampling, guide, upscale, decode, and output contract.
 
@@ -304,13 +348,15 @@ That implementation was audited from a REDGraft workflow, making REDGraft a
 reference fixture rather than a runtime identity. A future unrelated ConvRot
 checkpoint can reuse this profile or register another compatible profile.
 
-See `docs/LTX25_CONVROT.md` for the recipe/manifest/asset contract.
+See `docs/LTX25_CONVROT.md` and `docs/EXECUTION_RECIPES.md` for the provenance,
+recipe/manifest, and asset contracts.
 
 ## Extension Rule
 
 A new video checkpoint should extend the **smallest responsible layer**:
 
 - new checkpoint variant, existing runtime behavior: descriptor/detection only;
+- new provenance catalog: register a `CheckpointProvenanceProvider`;
 - new recipe for an existing format/backend: add an `ExecutionProfile` and
   worker, plus asset-provider adaptation if needed;
 - new support-asset source/layout: add/extend an asset provider;
@@ -323,8 +369,9 @@ generic router/job/storage/UI code.
 
 Contract tests cover model discovery, public capabilities, resolver/readiness,
 generic job normalization, process isolation, memory policy, storage, the
-capability-driven UI contract, execution-profile ambiguity, recipe adapters,
-asset-provider iteration, and the current ConvRot two-stage AV primitives.
+capability-driven UI contract, provenance caching/ambiguity, exact-SHA provider
+validation, execution-profile ambiguity, recipe adapters, asset-provider
+iteration, and the current ConvRot two-stage AV primitives.
 
 Real-model GPU validation is still intentionally separate. Backend registration,
 asset readiness, or passing unit/contract tests must not be described as a
