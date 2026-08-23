@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from model_asset_providers import ModelAssetProvider, model_asset_providers
 from model_provenance import prepare_checkpoint_provenance
+from model_recipes import execution_profiles
 from provenance_providers import register_builtin_provenance_providers
 from runtime_paths import resolve_runtime_python
 
@@ -124,6 +125,29 @@ def _provenance_message(checkpoint: Path, result: dict) -> str:
     return f"{checkpoint.name}: no trusted checkpoint provenance match was found"
 
 
+def _asset_declaration(
+    profile_id: str,
+    kind: str,
+    declaration: dict,
+) -> tuple[str, str]:
+    """Merge trusted profile sources without substituting custom recipe assets."""
+    name = str((declaration or {}).get("name") or "").strip()
+    url = str((declaration or {}).get("url") or "").strip()
+    profile = execution_profiles.get(profile_id)
+    fallback = (
+        dict(profile.asset_defaults.get(kind) or {})
+        if profile is not None and isinstance(profile.asset_defaults, dict)
+        else {}
+    )
+    fallback_name = str(fallback.get("name") or "").strip()
+    fallback_url = str(fallback.get("url") or "").strip()
+    if not name and fallback_name:
+        name = fallback_name
+    if not url and name and fallback_name and name.lower() == fallback_name.lower():
+        url = fallback_url
+    return name, url
+
+
 def _prepare_provider(
     provider: ModelAssetProvider,
     models_dir: Path,
@@ -173,19 +197,21 @@ def _prepare_provider(
 
         manifest = dict(state.get("asset_manifest") or {})
         resolved = dict(state.get("assets") or {})
-        for kind, declaration in manifest.items():
+        profile_obj = execution_profiles.get(profile)
+        asset_roles = profile_obj.required_assets if profile_obj is not None else tuple(manifest.keys())
+        for kind in asset_roles:
             if resolved.get(kind):
                 continue
-            name = str((declaration or {}).get("name") or "").strip()
-            url = str((declaration or {}).get("url") or "").strip()
+            declaration = dict(manifest.get(kind) or {})
+            name, url = _asset_declaration(profile, kind, declaration)
             if not name:
                 blockers.append(
-                    f"{checkpoint.name}: recipe '{profile}' does not declare required asset role '{kind}'"
+                    f"{checkpoint.name}: recipe '{profile}' does not declare required asset role '{kind}' and the profile has no default"
                 )
                 continue
             if not url:
                 blockers.append(
-                    f"{checkpoint.name}: {name} has no trusted source URL in the recipe"
+                    f"{checkpoint.name}: {name} has no trusted source URL in the recipe/profile"
                 )
                 continue
             print(f"  fetching {name}")
