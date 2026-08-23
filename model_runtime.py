@@ -2,7 +2,8 @@
 
 DuckMotion's UI should expose models and capabilities, not engine families.
 Architecture, checkpoint format and backend identifiers in this module are
-internal routing data.
+internal routing data. Execution-recipe defaults live in the recipe registry,
+not in checkpoint-format detection.
 """
 
 from __future__ import annotations
@@ -135,6 +136,7 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
                 (path / "transformer_2").exists() or index.get("transformer_2")
             ),
         }
+
     tokens = " ".join(part for part in (str(source).lower(), display_name) if part)
     detection = {
         "method": "source_name",
@@ -144,6 +146,8 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
     if ".safetensors" in tokens and "ltx" in tokens and (
         "convrot" in tokens or "redgraft" in tokens
     ):
+        # Compatibility-only format hint for non-local/configured paths. Recipe
+        # resolution remains independent of display/model names.
         detection["format"] = "int8_convrot"
     return tokens, detection
 
@@ -251,7 +255,10 @@ def backend_for_model(
         capabilities.text_to_video or capabilities.image_to_video
     ):
         return UNSUPPORTED_BACKEND
-    if architecture == "ltx25" and str((detection or {}).get("format") or "").lower() == "int8_convrot":
+    if (
+        architecture == "ltx25"
+        and str((detection or {}).get("format") or "").lower() == "int8_convrot"
+    ):
         return "ltx25_convrot"
     return backend_for_architecture(architecture)
 
@@ -316,22 +323,11 @@ def defaults_for_model(
     name: str,
     detection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Checkpoint-format detection must not choose execution-recipe defaults.
     defaults = defaults_for_architecture(architecture)
     architecture = (architecture or "").lower()
     text = str(name or "").lower()
     variant = str((detection or {}).get("variant") or "").lower()
-
-    if architecture == "ltx25" and variant == "convrot":
-        defaults.update(
-            {
-                "width": 1152,
-                "height": 768,
-                "num_frames": 241,
-                "fps": 24,
-                "num_inference_steps": 8,
-                "guidance_scale": 1.0,
-            }
-        )
 
     if architecture == "wan22" and variant == "ti2v":
         defaults.update(
