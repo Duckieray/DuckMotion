@@ -164,9 +164,14 @@ def prepare_checkpoint_provenance(checkpoint: str | Path) -> dict[str, Any]:
     """Resolve trusted provenance once and persist it for offline runtime use.
 
     Providers are queried with the strong SHA256 fingerprint. Exactly one provider
-    must match; ambiguous matches are deliberately not cached.
+    must match; ambiguous matches are deliberately not cached. A valid cached
+    match with materialized recipe JSON is reused without hashing or network.
     """
     path = Path(checkpoint).expanduser()
+    existing = cached_provenance(path)
+    if existing and cached_recipe_paths(path):
+        return {"matched": True, "record": existing, "cached": True, "errors": []}
+
     fingerprint = checkpoint_fingerprint(path)
     cache_root = provenance_cache_root()
     cache_root.mkdir(parents=True, exist_ok=True)
@@ -214,4 +219,4 @@ def prepare_checkpoint_provenance(checkpoint: str | Path) -> dict[str, Any]:
     index = _load_index()
     index["records"][_path_key(path)] = record
     _save_index(index)
-    return {"matched": True, "record": record, "errors": errors}
+    return {"matched": True, "record": record, "cached": False, "errors": errors}
