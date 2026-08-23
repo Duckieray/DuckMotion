@@ -61,12 +61,12 @@ class LTX25ConvRotBackend(VideoBackend):
             }
 
         script = r'''
-import json, sys
+import asyncio, json, sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root))
 sys.argv = [sys.argv[0]]
-out = {"ready": True, "comfy_root": str(root), "missing": []}
+out = {"ready": True, "comfy_root": str(root), "missing": [], "missing_nodes": []}
 try:
     import torch
     out["torch_version"] = getattr(torch, "__version__", None)
@@ -83,8 +83,27 @@ for module_name, symbol in (("comfy.sd", "load_diffusion_model"), ("comfy.sd", "
         if symbol: getattr(module, symbol)
     except Exception as exc:
         out["ready"] = False; out["missing"].append({"module": module_name, "symbol": symbol, "error": str(exc)})
+try:
+    import nodes
+    asyncio.run(nodes.init_extra_nodes(init_custom_nodes=False, init_api_nodes=False))
+    required_nodes = {
+        "UNETLoader", "CLIPLoader", "VAELoader", "ConditioningZeroOut",
+        "LTXVConditioning", "LTXVPreprocess", "EmptyLTXVLatentVideo",
+        "LTXVImgToVideoInplace", "LTXVEmptyLatentAudio", "LTXVConcatAVLatent",
+        "RandomNoise", "CFGGuider", "KSamplerSelect", "ManualSigmas",
+        "SamplerCustomAdvanced", "LTXVSeparateAVLatent", "LTXVCropGuides",
+        "LTXVLatentUpsampler", "LatentUpscaleBy", "LatentUpscaleModelLoader",
+        "VAEDecodeTiled", "LTXVAudioVAEDecode", "CreateVideo", "SaveVideo",
+    }
+    out["missing_nodes"] = sorted(required_nodes.difference(nodes.NODE_CLASS_MAPPINGS))
+    if out["missing_nodes"]:
+        out["ready"] = False
+except Exception as exc:
+    out["ready"] = False; out["missing"].append({"module": "nodes", "error": str(exc)})
 if out["ready"] and not out.get("cuda_available"):
     out["ready"] = False; out["reason"] = "ConvRot runtime imports succeed, but CUDA is unavailable."
+elif out["missing_nodes"]:
+    out["reason"] = "Pinned Comfy core is missing one or more nodes required by the REDGraft runtime."
 elif out["missing"]:
     out["reason"] = "One or more ConvRot runtime imports are unavailable."
 print(json.dumps(out))
