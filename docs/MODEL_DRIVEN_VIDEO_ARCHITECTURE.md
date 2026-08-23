@@ -33,7 +33,8 @@ VideoJobCoordinator
 VideoBackendResolver
     |
     +--> isolated Wan worker
-    `--> isolated LTX-2.5 worker
+    +--> isolated LTX-2.5 Diffusers worker
+    `--> isolated LTX-2.5 ConvRot worker
     |
     v
 generic storage / jobs / gallery
@@ -141,7 +142,12 @@ Architecture-specific ML packages are not installed in WebbDuck's interpreter.
 Backends launch dedicated worker interpreters selected by:
 
 - `DUCKMOTION_WAN_PYTHON`;
-- `DUCKMOTION_LTX_PYTHON`.
+- `DUCKMOTION_LTX_PYTHON`;
+- `DUCKMOTION_LTX_CONVROT_PYTHON`.
+
+The ConvRot environment also owns a pinned Comfy core checkout. DuckMotion imports
+that checkout as a Python library only; it does not launch a Comfy server, expose
+Comfy's UI, or submit arbitrary workflow JSON over HTTP.
 
 Runtime requirements live under `runtime_requirements/`.
 
@@ -182,7 +188,7 @@ LTX-2.5 publicly exposes:
 - image-to-video with optional source image;
 - synchronized audio output.
 
-The worker follows the distilled two-stage path:
+The standard isolated worker follows the distilled two-stage path:
 
 1. half-resolution stage-1 diffusion;
 2. 2x latent spatial upsampling;
@@ -191,7 +197,7 @@ The worker follows the distilled two-stage path:
 
 Descriptor semantics therefore describe final output:
 
-- default 1536x1024;
+- default 1536x1024 for the standard Diffusers runtime;
 - 121 frames;
 - 24 fps;
 - final dimensions divisible by 64;
@@ -200,6 +206,43 @@ Descriptor semantics therefore describe final output:
 - `sampling_schedule_locked = true`.
 
 The browser hides arbitrary step/guidance editing for this locked schedule.
+
+### REDGraft LTX-2.5 INT8 ConvRot
+
+ConvRot single-file checkpoints are detected privately and routed to
+`ltx25_convrot`; the public model payload remains architecture/backend-free.
+Readiness is strict: the selected checkpoint must have a companion JSON recipe
+and all four declared support weights must resolve before generation starts:
+
+- Gemma 4 12B LTX-2.5 ConvRot text encoder;
+- LTX 2.3 x2 spatial latent upscaler;
+- LTX 2.5 video VAE;
+- LTX 2.5 audio VAE.
+
+The current REDGraft contract is intentionally fixed rather than exposing
+arbitrary Comfy sampling controls:
+
+1. final defaults are 1152x768, 241 frames, 24 fps, CFG 1;
+2. stage one runs at half final width/height;
+3. I2V sources are resized to a 1536-pixel longer edge with Lanczos and passed
+   through `LTXVPreprocess(img_compression=18)`;
+4. positive text conditioning is paired with `ConditioningZeroOut(positive)`;
+5. video and audio latents are concatenated and sampled together with Euler and
+   `1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0`;
+6. after stage one, `LTXVCropGuides` prepares the stage-two conditioning/latent;
+7. video latent refinement is `LTXVLatentUpsampler` followed by bicubic
+   `LatentUpscaleBy(scale_by=0.5)`; I2V then reapplies the source guide at
+   strength 1.0 (stage-one guide strength is 0.7);
+8. video/audio latents are recombined and sampled with Euler and
+   `0.85, 0.7250, 0.4219, 0.0`;
+9. final video and audio latents are separated, decoded, and muxed to one video.
+
+Both VAEs are loaded through Comfy core `VAELoader`. The audio VAE is supplied to
+`LTXVEmptyLatentAudio`, matching the pinned Comfy node contract.
+
+The companion JSON is treated as declarative asset/recipe evidence only. It is
+never executed as an arbitrary graph. See `docs/LTX25_CONVROT.md` for model
+layout, environment, and validation details.
 
 ## Extension Rule
 
@@ -216,8 +259,9 @@ router/job/storage/UI code.
 ## Validation Milestone
 
 Contract tests cover model discovery, public capabilities, resolver/readiness,
-generic job normalization, process isolation, memory policy, storage, and the
-capability-driven UI contract.
+generic job normalization, process isolation, memory policy, storage, the
+capability-driven UI contract, and the fixed REDGraft ConvRot recipe primitives.
 
-Real-model GPU validation is still intentionally separate. Backend registration
-or browser readiness must not be described as a successful hardware smoke test.
+Real-model GPU validation is still intentionally separate. Backend registration,
+asset readiness, or passing unit/contract tests must not be described as a
+successful hardware smoke test.
