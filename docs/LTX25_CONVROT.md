@@ -78,7 +78,7 @@ declare one of the support weights, or a declared weight cannot be resolved.
 The companion JSON is evidence for the supported recipe, but the worker executes
 a fixed DuckMotion implementation.
 
-Reference defaults:
+DuckMotion's current ConvRot model defaults are:
 
 ```text
 final resolution: 1152x768
@@ -87,6 +87,11 @@ fps:              24
 CFG:              1.0
 sampler:          Euler
 ```
+
+The `241` frame count is an adapter default, not a value we claim to have proven
+from the supplied companion JSON. The workflow contains group-local/internal
+frame and frame-rate widget values that may be overridden by higher-level links,
+so they are not used as authoritative top-level defaults.
 
 Final dimensions are snapped to multiples of 64 and frame counts to `8k+1`.
 Stage one operates at half final width and height.
@@ -162,6 +167,10 @@ Unit/contract coverage lives in `tests/test_ltx_convrot.py` and protects:
 - asset discovery across a normal model-root layout;
 - private ConvRot routing and public architecture-free model payloads;
 - the critical REDGraft AV and stage-two operation ordering.
+
+`tools/run_hardware_smoke.py` adds dedicated ConvRot T2V/I2V canaries and a
+heavier DuckMotion-default row. It intentionally keeps ConvRot distinct from the
+standard Diffusers LTX target.
 
 A passing test suite is **not** a hardware validation. Before declaring the
 runtime production-ready on a specific GPU, run a real T2V and I2V generation
