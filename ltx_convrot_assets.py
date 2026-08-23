@@ -158,8 +158,12 @@ def _node_types(config: Mapping[str, Any]) -> set[str]:
     return types
 
 
+def _workflow_literals(config: Mapping[str, Any]) -> set[str]:
+    return {value.strip().lower() for value in _walk_strings(config) if value.strip()}
+
+
 def execution_profile(config: Mapping[str, Any]) -> str | None:
-    """Resolve a supported profile from explicit manifest or structural evidence."""
+    """Resolve a supported profile from explicit manifest or proven workflow evidence."""
     explicit = profile_from_explicit_manifest(
         config,
         architecture=ARCHITECTURE,
@@ -173,7 +177,12 @@ def execution_profile(config: Mapping[str, Any]) -> str | None:
         source_format=SOURCE_FORMAT,
         node_types=_node_types(config),
     )
-    return inferred.profile_id if inferred is not None else None
+    if inferred is None:
+        return None
+    required_literals = {value.strip().lower() for value in inferred.evidence_literals if value.strip()}
+    if required_literals and not required_literals.issubset(_workflow_literals(config)):
+        return None
+    return inferred.profile_id
 
 
 def is_ltx25_convrot_path(value: str | Path) -> bool:
