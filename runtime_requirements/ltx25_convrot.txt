@@ -1,0 +1,31 @@
+# LTX-2.5 INT8 ConvRot runtime
+#
+# PyTorch/torchvision/torchaudio are installed separately by
+# tools/prepare_model_runtimes.py from the selected CUDA wheel channel.
+# The pinned Comfy core checkout lives inside this runtime and is imported as a
+# library by ltx_convrot_worker.py; no Comfy HTTP server is started.
+comfy-kitchen==0.2.31
+torchsde
+einops
+transformers>=4.50.3,<6
+tokenizers>=0.13.3
+sentencepiece
+safetensors>=0.5.0
+aiohttp
+yarl>=1.18.0
+PyYAML
+Pillow
+scipy
+tqdm
+psutil
+filelock
+av>=16.0.0
+requests
+simpleeval
+blake3
+kornia>=0.7.1
+spandrel
+pydantic>=2
+pydantic-settings
+numpy>=2.0.0
+soundfile
