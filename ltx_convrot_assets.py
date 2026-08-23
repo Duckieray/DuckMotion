@@ -2,7 +2,12 @@
 
 ConvRot is an internal checkpoint format. Public model payloads continue to expose
 only model identity and capabilities; this module is used by discovery/readiness and
-the isolated worker to locate the model's companion recipe and support weights.
+the isolated worker to locate the model's support weights.
+
+Known REDGraft checkpoints use a fixed DuckMotion recipe audited from the original
+companion workflow. The workflow JSON is therefore optional at runtime: if present
+it is still used as declarative evidence, but normal users do not have to keep a
+Comfy workflow beside the checkpoint just to run the supported recipe.
 """
 
 from __future__ import annotations
@@ -21,6 +26,41 @@ MODEL_CATEGORY_DIRS = {
     "diffusion-models",
     "unet",
 }
+
+# The audited REDGraft workflow declares these exact support assets. They are
+# published by Lightricks; setup downloads them into DuckMotion's private asset
+# cache when they are not already available in the user's shared model roots.
+REDGRAFT_ASSET_SOURCES: dict[str, dict[str, str]] = {
+    "text_encoder": {
+        "name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+        "repo_id": "Lightricks/LTX-2.5",
+        "filename": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+    },
+    "latent_upscaler": {
+        "name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+        "repo_id": "Lightricks/LTX-2.3",
+        "filename": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+    },
+    "video_vae": {
+        "name": "ltx-2.5-video-vae-conv-bf16.safetensors",
+        "repo_id": "Lightricks/LTX-2.5",
+        "filename": "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+    },
+    "audio_vae": {
+        "name": "ltx-2.5-audio-vae-bf16.safetensors",
+        "repo_id": "Lightricks/LTX-2.5",
+        "filename": "vae/ltx-2.5-audio-vae-bf16.safetensors",
+    },
+}
+
+
+def asset_cache_root() -> Path:
+    raw = str(os.getenv("DUCKMOTION_ASSET_CACHE") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".cache" / "duckmotion" / "assets"
+
+
+def convrot_asset_cache_root() -> Path:
+    return asset_cache_root() / "ltx25_convrot"
 
 
 def _safetensors_header_text(path: Path) -> str:
@@ -62,6 +102,18 @@ def is_ltx25_convrot_path(value: str | Path) -> bool:
     )
 
 
+def is_redgraft_checkpoint(value: str | Path) -> bool:
+    path = Path(value).expanduser()
+    return is_ltx25_convrot_path(path) and "redgraft" in path.name.lower()
+
+
+def builtin_recipe_asset_names(checkpoint: str | Path) -> dict[str, str] | None:
+    """Return the fixed audited asset contract for known REDGraft checkpoints."""
+    if not is_redgraft_checkpoint(checkpoint):
+        return None
+    return {kind: spec["name"] for kind, spec in REDGRAFT_ASSET_SOURCES.items()}
+
+
 def _walk_strings(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
@@ -100,10 +152,6 @@ def find_companion_config(checkpoint: str | Path) -> Path | None:
         if any(checkpoint_name == Path(value).name.lower() for value in values):
             return candidate
 
-    # Civitai companion configs are often named for the recipe rather than the
-    # checkpoint. If there is exactly one JSON beside a ConvRot checkpoint it
-    # is still a useful deterministic candidate, but readiness validates that it
-    # actually describes all required assets before execution.
     if len(candidates) == 1:
         return candidates[0]
     return None
@@ -132,15 +180,6 @@ def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> di
 
 
 def _inferred_model_root(checkpoint_path: Path) -> Path | None:
-    """Infer a shared model root from conventional checkpoint category paths.
-
-    A checkpoint such as ``models/checkpoints/ltx/model.safetensors`` must be
-    able to find sibling ``models/text_encoders`` / ``models/vae`` directories
-    during readiness, where the configured models_dir is not part of the backend
-    readiness interface. Only recognized model-category ancestors are used so we
-    do not accidentally recurse through an arbitrary filesystem parent.
-    """
-
     for ancestor in checkpoint_path.parent.parents:
         if ancestor.name.lower() in MODEL_CATEGORY_DIRS:
             return ancestor.parent
@@ -168,6 +207,9 @@ def candidate_search_roots(
             path = Path(raw).expanduser()
             if path not in roots:
                 roots.append(path)
+    cache = convrot_asset_cache_root()
+    if cache not in roots:
+        roots.append(cache)
     return roots
 
 
@@ -199,7 +241,18 @@ def inspect_convrot_assets(
     checkpoint_path = Path(checkpoint).expanduser()
     config_path = find_companion_config(checkpoint_path)
     config = read_json(config_path) if config_path else {}
-    names = extract_asset_names(config, checkpoint_path.name) if config else {kind: "" for kind in ASSET_KINDS}
+    builtin_names = builtin_recipe_asset_names(checkpoint_path)
+
+    if config:
+        names = extract_asset_names(config, checkpoint_path.name)
+        recipe_source = "companion_json"
+    elif builtin_names:
+        names = builtin_names
+        recipe_source = "builtin:redgraft_ltx25_fast2k"
+    else:
+        names = {kind: "" for kind in ASSET_KINDS}
+        recipe_source = None
+
     roots = candidate_search_roots(checkpoint_path, models_dir=models_dir)
     resolved: dict[str, str | None] = {}
     missing: list[str] = []
@@ -208,20 +261,22 @@ def inspect_convrot_assets(
         path = resolve_named_asset(name, roots) if name else None
         resolved[kind] = str(path) if path else None
         if not path:
-            missing.append(name or f"<{kind} not declared in companion config>")
+            missing.append(name or f"<{kind} not declared by a supported recipe>")
 
     checkpoint_present = checkpoint_path.exists() and checkpoint_path.is_file()
     if not checkpoint_present:
         missing.insert(0, checkpoint_path.name or str(checkpoint_path))
-    if config_path is None:
-        missing.insert(0, "<companion JSON config>")
+    if recipe_source is None:
+        missing.insert(0, "<supported companion recipe>")
 
     return {
-        "ready": checkpoint_present and config_path is not None and not missing,
+        "ready": checkpoint_present and recipe_source is not None and not missing,
         "checkpoint": str(checkpoint_path),
         "config_path": str(config_path) if config_path else None,
+        "recipe_source": recipe_source,
         "asset_names": names,
         "assets": resolved,
         "missing": missing,
         "search_roots": [str(root) for root in roots],
+        "asset_cache": str(convrot_asset_cache_root()),
     }
