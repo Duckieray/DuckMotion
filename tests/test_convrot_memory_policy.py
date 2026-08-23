@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from ltx_convrot_runtime_worker import resolve_memory_policy
+from model_recipes import LTX25_CONVROT_TWO_STAGE_AV
+
+
+def test_convrot_auto_uses_conservative_policy_on_16gb_class_gpu(monkeypatch):
+    monkeypatch.delenv("DUCKMOTION_LTX_CONVROT_MEMORY", raising=False)
+
+    policy = resolve_memory_policy(15.51)
+
+    assert policy["name"] == "conservative"
+    args = policy["comfy_args"]
+    assert "--enable-dynamic-vram" in args
+    assert "--cache-none" in args
+    assert "--disable-smart-memory" in args
+    assert "--use-split-cross-attention" in args
+    assert args[args.index("--vram-headroom") + 1] == "1.5"
+
+
+def test_convrot_auto_uses_balanced_policy_on_24gb_gpu(monkeypatch):
+    monkeypatch.delenv("DUCKMOTION_LTX_CONVROT_MEMORY", raising=False)
+
+    policy = resolve_memory_policy(24.0)
+
+    assert policy["name"] == "balanced"
+    args = policy["comfy_args"]
+    assert "--enable-dynamic-vram" in args
+    assert "--cache-none" in args
+    assert "--disable-smart-memory" not in args
+    assert "--use-split-cross-attention" not in args
+    assert args[args.index("--vram-headroom") + 1] == "0.75"
+
+
+def test_convrot_auto_keeps_large_gpu_on_performance_policy(monkeypatch):
+    monkeypatch.delenv("DUCKMOTION_LTX_CONVROT_MEMORY", raising=False)
+
+    policy = resolve_memory_policy(48.0)
+
+    assert policy["name"] == "performance"
+    assert policy["comfy_args"] == ("--cache-none",)
+
+
+def test_convrot_memory_policy_can_be_overridden_for_debugging(monkeypatch):
+    monkeypatch.setenv("DUCKMOTION_LTX_CONVROT_MEMORY", "balanced")
+
+    policy = resolve_memory_policy(15.51)
+
+    assert policy["name"] == "balanced"
+
+
+def test_execution_profile_uses_vram_aware_runtime_launcher():
+    assert LTX25_CONVROT_TWO_STAGE_AV.worker == "ltx_convrot_runtime_worker.py"
