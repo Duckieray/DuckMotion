@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ltx_convrot_assets import inspect_convrot_assets
+from ltx_convrot_backend import LTX25ConvRotBackend
 from ltx_convrot_worker import (
     HIGH_SIGMAS,
     IMAGE_GUIDE_STRENGTH,
@@ -14,14 +15,17 @@ from ltx_convrot_worker import (
     LATENT_UPSCALE_METHOD,
     LATENT_UPSCALE_SCALE,
     LOW_SIGMAS,
+    UINT64_MASK,
     UPSCALED_IMAGE_GUIDE_STRENGTH,
     VIDEO_DECODE_OVERLAP,
     VIDEO_DECODE_TEMPORAL_OVERLAP,
     VIDEO_DECODE_TEMPORAL_SIZE,
     VIDEO_DECODE_TILE_SIZE,
+    VIDEO_OUTPUT_CRF,
     _call_node,
     _snap_dimension,
     _snap_frames,
+    _stage2_seed,
 )
 from model_runtime import describe_video_model
 
@@ -39,9 +43,16 @@ def test_redgraft_recipe_constants_are_locked():
     assert VIDEO_DECODE_OVERLAP == 96
     assert VIDEO_DECODE_TEMPORAL_SIZE == 96
     assert VIDEO_DECODE_TEMPORAL_OVERLAP == 24
+    assert VIDEO_OUTPUT_CRF == 16
     assert _snap_dimension(1152) == 1152
     assert _snap_dimension(768) == 768
     assert _snap_frames(10 * 24 + 1) == 241
+
+
+def test_stage_two_uses_a_distinct_reproducible_noise_seed():
+    assert _stage2_seed(0) == 1
+    assert _stage2_seed(1234) == 1235
+    assert _stage2_seed(UINT64_MASK) == 0
 
 
 def test_call_node_supports_classic_and_modern_execute_contracts():
@@ -86,12 +97,30 @@ def test_worker_source_keeps_redgraft_av_second_stage_and_decoder_order():
     assert "positive=stage2_positive" in source
     assert "negative=stage2_negative" in source
     assert "strength=UPSCALED_IMAGE_GUIDE_STRENGTH" in source
+    assert "noise_seed=stage2_seed" in source
     assert source.index('"LTXVSeparateAVLatent", av_latent=stage2') < source.index('"VAEDecodeTiled"')
     assert "tile_size=VIDEO_DECODE_TILE_SIZE" in source
     assert "overlap=VIDEO_DECODE_OVERLAP" in source
     assert "temporal_size=VIDEO_DECODE_TEMPORAL_SIZE" in source
     assert "temporal_overlap=VIDEO_DECODE_TEMPORAL_OVERLAP" in source
     assert 'video_vae.decode(video_latent["samples"])' not in source
+    assert '"crf": VIDEO_OUTPUT_CRF' in source
+
+
+def test_runtime_probe_requires_redgraft_node_surface():
+    source = inspect.getsource(LTX25ConvRotBackend._probe_runtime)
+    assert "init_extra_nodes(init_custom_nodes=False, init_api_nodes=False)" in source
+    for node_name in (
+        "LTXVEmptyLatentAudio",
+        "LTXVConcatAVLatent",
+        "LTXVCropGuides",
+        "LTXVLatentUpsampler",
+        "VAEDecodeTiled",
+        "LTXVAudioVAEDecode",
+        "CreateVideo",
+        "SaveVideo",
+    ):
+        assert node_name in source
 
 
 def test_companion_recipe_resolves_all_required_assets_from_standard_model_root(tmp_path: Path):
