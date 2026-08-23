@@ -30,6 +30,8 @@ VIDEO_DECODE_TILE_SIZE = 480
 VIDEO_DECODE_OVERLAP = 96
 VIDEO_DECODE_TEMPORAL_SIZE = 96
 VIDEO_DECODE_TEMPORAL_OVERLAP = 24
+VIDEO_OUTPUT_CRF = 16
+UINT64_MASK = (1 << 64) - 1
 
 
 def _snap_dimension(value: int) -> int:
@@ -39,6 +41,12 @@ def _snap_dimension(value: int) -> int:
 def _snap_frames(value: int) -> int:
     value = max(9, int(value))
     return max(9, ((value - 1) // 8) * 8 + 1)
+
+
+def _stage2_seed(seed: int) -> int:
+    """Derive the independent second REDGraft noise stream reproducibly."""
+
+    return (int(seed) + 1) & UINT64_MASK
 
 
 def _result_tuple(value):
@@ -168,7 +176,8 @@ def _run(request: dict, output_dir: Path) -> dict:
     stage1_height = max(256, final_height // 2)
     num_frames = _snap_frames(int(request.get("num_frames") or 241))
     fps = float(request.get("fps") or 24.0)
-    seed = int(request.get("seed") if request.get("seed") is not None else 0)
+    seed = int(request.get("seed") if request.get("seed") is not None else 0) & UINT64_MASK
+    stage2_seed = _stage2_seed(seed)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     nodes = _prepare_comfy(output_dir, assets)
@@ -315,7 +324,7 @@ def _run(request: dict, output_dir: Path) -> dict:
     stage2 = _call_node(
         nodes,
         "SamplerCustomAdvanced",
-        noise=_call_node(nodes, "RandomNoise", noise_seed=seed)[0],
+        noise=_call_node(nodes, "RandomNoise", noise_seed=stage2_seed)[0],
         guider=_call_node(
             nodes,
             "CFGGuider",
@@ -359,12 +368,15 @@ def _run(request: dict, output_dir: Path) -> dict:
         bit_depth=8,
         color_space="sRGB",
     )[0]
+    # The reference workflow uses VideoHelperSuite for H.264/yuv420p/CRF16.
+    # Pinned Comfy core SaveVideo produces yuv420p for 8-bit H.264, so no custom
+    # output node is needed to preserve those encode settings.
     _call_node(
         nodes,
         "SaveVideo",
         video=video,
         filename_prefix="ltx_convrot",
-        format={"format": "mp4", "codec": {"codec": "h264", "encoding": {"encoding": "re-encode", "crf": 19}}},
+        format={"format": "mp4", "codec": {"codec": "h264", "encoding": {"encoding": "re-encode", "crf": VIDEO_OUTPUT_CRF}}},
     )
     video_path = _latest_video(output_dir)
     if video_path is None:
@@ -387,6 +399,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "frame_count": num_frames,
         "fps": fps,
         "seed": seed,
+        "stage2_seed": stage2_seed,
         "audio": True,
         "sampling": "redgraft_convrot_two_stage",
         "high_sigmas": HIGH_SIGMAS,
@@ -401,6 +414,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "video_decode_overlap": VIDEO_DECODE_OVERLAP,
         "video_decode_temporal_size": VIDEO_DECODE_TEMPORAL_SIZE,
         "video_decode_temporal_overlap": VIDEO_DECODE_TEMPORAL_OVERLAP,
+        "video_output_crf": VIDEO_OUTPUT_CRF,
         "runtime": {
             "device": "cuda",
             "source_format": "int8_convrot",
