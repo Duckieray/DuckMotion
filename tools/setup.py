@@ -6,8 +6,8 @@ Examples:
     python tools/setup.py --models /path/to/models --webbduck-dir ../WebbDuck
 
 The command prepares isolated runtimes, repairs runtime-owned adjuncts, persists
-the shared model root, prepares support assets for discovered models, and
-installs/refreshes the WebbDuck plugin when a checkout is available.
+the shared model root, prepares recipe-declared support assets for discovered
+models, and installs/refreshes the WebbDuck plugin when a checkout is available.
 Environment variables and special model folder layouts are not required for the
 normal path.
 """
@@ -95,7 +95,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-model-assets",
         action="store_true",
-        help="Do not prepare support assets for discovered models.",
+        help="Do not prepare recipe-declared support assets for discovered models.",
     )
     parser.add_argument(
         "--skip-plugin-install",
@@ -114,8 +114,6 @@ def main() -> int:
 
     runtime_tool = str(ROOT / "tools" / "prepare_model_runtimes.py")
     if args.skip_runtimes:
-        # Skipping package installation must not leave runtime-owned resources
-        # (notably the pinned ConvRot Comfy checkout) half-created.
         _run(
             [
                 args.python,
@@ -140,7 +138,7 @@ def main() -> int:
         asset_status = _run_nonfatal(
             [
                 args.python,
-                str(ROOT / "tools" / "prepare_convrot_assets.py"),
+                str(ROOT / "tools" / "prepare_model_assets.py"),
                 "--models",
                 str(models_dir),
             ]
@@ -164,8 +162,8 @@ def main() -> int:
 
     print("")
     if asset_status:
-        print("Setup completed with one or more model-asset access blockers.")
-        print("No manual folder arrangement is required; resolve the reported Hugging Face access issue and rerun setup.")
+        print("Setup completed with one or more model recipe/asset blockers.")
+        print("No manual folder arrangement is required; resolve the reported recipe/access issue and rerun setup.")
     else:
         print("Setup complete.")
     print("No DUCKMOTION_*_PYTHON exports are required.")
