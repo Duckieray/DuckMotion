@@ -10,7 +10,8 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from ltx_convrot_assets import SUPPORTED_EXECUTION_PROFILE, inspect_convrot_assets
+from ltx_convrot_assets import inspect_convrot_assets
+from model_recipes import ExecutionProfile, execution_profiles
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 
 
@@ -19,7 +20,7 @@ class LTX25ConvRotBackend(VideoBackend):
     _readiness_ttl_seconds = 60.0
 
     def __init__(self) -> None:
-        self._readiness_key: tuple[str, str, str] | None = None
+        self._readiness_key: tuple[str, str, str, str] | None = None
         self._readiness_checked_at = 0.0
         self._readiness_payload: dict[str, Any] | None = None
 
@@ -43,7 +44,16 @@ class LTX25ConvRotBackend(VideoBackend):
             return Path("<missing>")
         return Path(python_exe).expanduser().resolve().parent.parent / "comfyui"
 
-    def _probe_runtime(self, python_exe: str, comfy_root: Path) -> dict[str, Any]:
+    @staticmethod
+    def _profile(assets: dict[str, Any]) -> ExecutionProfile | None:
+        return execution_profiles.get(str(assets.get("execution_profile") or ""))
+
+    def _probe_runtime(
+        self,
+        python_exe: str,
+        comfy_root: Path,
+        profile: ExecutionProfile | None,
+    ) -> dict[str, Any]:
         executable = Path(python_exe).expanduser() if python_exe else Path("<missing>")
         if not python_exe or not executable.exists():
             return {
@@ -60,10 +70,12 @@ class LTX25ConvRotBackend(VideoBackend):
                 "reason": "Pinned Comfy core checkout is missing from the ConvRot runtime.",
             }
 
+        required_nodes = sorted(profile.required_runtime_nodes) if profile else []
         script = r'''
 import asyncio, json, sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
+required_nodes = set(json.loads(sys.argv[2]))
 sys.path.insert(0, str(root))
 sys.argv = [sys.argv[0]]
 out = {"ready": True, "comfy_root": str(root), "missing": [], "missing_nodes": []}
@@ -86,15 +98,6 @@ for module_name, symbol in (("comfy.sd", "load_diffusion_model"), ("comfy.sd", "
 try:
     import nodes
     asyncio.run(nodes.init_extra_nodes(init_custom_nodes=False, init_api_nodes=False))
-    required_nodes = {
-        "UNETLoader", "CLIPLoader", "VAELoader", "ConditioningZeroOut",
-        "LTXVConditioning", "LTXVPreprocess", "EmptyLTXVLatentVideo",
-        "LTXVImgToVideoInplace", "LTXVEmptyLatentAudio", "LTXVConcatAVLatent",
-        "RandomNoise", "CFGGuider", "KSamplerSelect", "ManualSigmas",
-        "SamplerCustomAdvanced", "LTXVSeparateAVLatent", "LTXVCropGuides",
-        "LTXVLatentUpsampler", "LatentUpscaleBy", "LatentUpscaleModelLoader",
-        "VAEDecodeTiled", "LTXVAudioVAEDecode", "CreateVideo", "SaveVideo",
-    }
     out["missing_nodes"] = sorted(required_nodes.difference(nodes.NODE_CLASS_MAPPINGS))
     if out["missing_nodes"]:
         out["ready"] = False
@@ -103,14 +106,14 @@ except Exception as exc:
 if out["ready"] and not out.get("cuda_available"):
     out["ready"] = False; out["reason"] = "ConvRot runtime imports succeed, but CUDA is unavailable."
 elif out["missing_nodes"]:
-    out["reason"] = "Pinned Comfy core is missing nodes required by the supported LTX ConvRot execution profile."
+    out["reason"] = "Pinned Comfy core is missing nodes required by the selected execution profile."
 elif out["missing"]:
     out["reason"] = "One or more ConvRot runtime imports are unavailable."
 print(json.dumps(out))
 '''
         try:
             completed = subprocess.run(
-                [python_exe, "-c", script, str(comfy_root)],
+                [python_exe, "-c", script, str(comfy_root), json.dumps(required_nodes)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -151,22 +154,30 @@ print(json.dumps(out))
         python_exe = self._python()
         comfy_root = self._comfy_root(python_exe)
         assets = inspect_convrot_assets(descriptor.source)
-        key = (python_exe, str(comfy_root), descriptor.source)
+        profile = self._profile(assets)
+        profile_id = profile.profile_id if profile else ""
+        key = (python_exe, str(comfy_root), descriptor.source, profile_id)
         now = time.monotonic()
-        if self._readiness_payload is not None and self._readiness_key == key and now - self._readiness_checked_at < self._readiness_ttl_seconds:
+        if (
+            self._readiness_payload is not None
+            and self._readiness_key == key
+            and now - self._readiness_checked_at < self._readiness_ttl_seconds
+        ):
             return dict(self._readiness_payload)
 
-        runtime = self._probe_runtime(python_exe, comfy_root)
-        ready = bool(runtime.get("ready") and assets.get("ready"))
+        runtime = self._probe_runtime(python_exe, comfy_root, profile)
+        ready = bool(runtime.get("ready") and profile is not None and assets.get("ready"))
         reason = runtime.get("reason")
-        if runtime.get("ready") and not assets.get("ready"):
+        if runtime.get("ready") and profile is None:
+            reason = "LTX ConvRot format is supported, but no compatible execution recipe was resolved."
+        elif runtime.get("ready") and not assets.get("ready"):
             reason = "LTX ConvRot checkpoint recipe/assets are incomplete: " + ", ".join(assets.get("missing") or [])
         payload = {
             **runtime,
             "ready": ready,
             "reason": reason,
             "source_format": "int8_convrot",
-            "execution_profile": assets.get("execution_profile"),
+            "execution_profile": profile_id or None,
             "assets": assets,
         }
         self._readiness_key = key
@@ -174,7 +185,12 @@ print(json.dumps(out))
         self._readiness_payload = dict(payload)
         return payload
 
-    def generate(self, descriptor: VideoModelDescriptor, request: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    def generate(
+        self,
+        descriptor: VideoModelDescriptor,
+        request: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         output_dir_raw = str(kwargs.get("output_dir") or "").strip()
         if not output_dir_raw:
             raise ValueError("LTX ConvRot output_dir is required")
@@ -182,25 +198,39 @@ print(json.dumps(out))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         config = kwargs.get("config") if isinstance(kwargs.get("config"), dict) else {}
-        assets = inspect_convrot_assets(descriptor.source, models_dir=str(config.get("models_dir") or "") or None)
+        assets = inspect_convrot_assets(
+            descriptor.source,
+            models_dir=str(config.get("models_dir") or "") or None,
+        )
         if not assets.get("ready"):
-            raise RuntimeError("LTX ConvRot recipe/assets are incomplete: " + ", ".join(assets.get("missing") or []))
-        profile = str(assets.get("execution_profile") or "")
-        if profile != SUPPORTED_EXECUTION_PROFILE:
-            raise RuntimeError(f"Unsupported LTX ConvRot execution profile: {profile or '<missing>'}")
+            raise RuntimeError(
+                "LTX ConvRot recipe/assets are incomplete: "
+                + ", ".join(assets.get("missing") or [])
+            )
+        profile = self._profile(assets)
+        if profile is None:
+            raise RuntimeError("No compatible LTX ConvRot execution profile is installed")
 
         python_exe = self._python()
         if not python_exe:
             raise RuntimeError("LTX ConvRot runtime Python is not configured")
         comfy_root = self._comfy_root(python_exe)
-        worker = Path(__file__).with_name("ltx_convrot_worker.py")
+        worker = Path(__file__).with_name(profile.worker)
+        if not worker.exists():
+            raise RuntimeError(
+                f"Execution profile '{profile.profile_id}' worker is missing: {worker}"
+            )
         is_cancelled: Callable[[], bool] | None = kwargs.get("is_cancelled")
         defaults = descriptor.defaults or {}
-        seed = int(request.get("seed") if request.get("seed") is not None else int(time.time_ns() & 0xFFFFFFFF))
+        seed = int(
+            request.get("seed")
+            if request.get("seed") is not None
+            else int(time.time_ns() & 0xFFFFFFFF)
+        )
         payload = {
             "model_path": descriptor.source,
             "model_name": descriptor.name,
-            "execution_profile": profile,
+            "execution_profile": profile.profile_id,
             "config_path": assets.get("config_path"),
             "assets": assets.get("assets"),
             "prompt": str(request.get("prompt") or "").strip(),
@@ -214,7 +244,10 @@ print(json.dumps(out))
         if not payload["prompt"]:
             raise ValueError("Prompt is required")
 
-        timeout_seconds = max(60.0, float(os.getenv("DUCKMOTION_LTX_CONVROT_TIMEOUT_SECONDS", "14400")))
+        timeout_seconds = max(
+            60.0,
+            float(os.getenv("DUCKMOTION_LTX_CONVROT_TIMEOUT_SECONDS", "14400")),
+        )
         with tempfile.TemporaryDirectory(prefix="duckmotion_ltx_convrot_") as tmp_raw:
             tmp = Path(tmp_raw)
             request_path = tmp / "request.json"
@@ -225,7 +258,16 @@ print(json.dumps(out))
             env["DUCKMOTION_LTX_CONVROT_COMFY_ROOT"] = str(comfy_root)
             with log_path.open("w", encoding="utf-8") as log_file:
                 proc = subprocess.Popen(
-                    [python_exe, str(worker), "--request", str(request_path), "--result", str(result_path), "--output-dir", str(output_dir)],
+                    [
+                        python_exe,
+                        str(worker),
+                        "--request",
+                        str(request_path),
+                        "--result",
+                        str(result_path),
+                        "--output-dir",
+                        str(output_dir),
+                    ],
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -242,15 +284,30 @@ print(json.dumps(out))
                         raise RuntimeError("LTX ConvRot generation cancelled")
                     if time.monotonic() - started > timeout_seconds:
                         proc.kill()
-                        raise RuntimeError(f"LTX ConvRot runtime timed out after {int(timeout_seconds)} seconds")
+                        raise RuntimeError(
+                            f"LTX ConvRot runtime timed out after {int(timeout_seconds)} seconds"
+                        )
                     time.sleep(0.5)
 
-            logs = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:] if log_path.exists() else []
+            logs = (
+                log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+                if log_path.exists()
+                else []
+            )
             if not result_path.exists():
-                raise RuntimeError(f"LTX ConvRot runtime exited without a result (code {proc.returncode}).\n" + "\n".join(logs[-20:]))
+                raise RuntimeError(
+                    f"LTX ConvRot runtime exited without a result (code {proc.returncode}).\n"
+                    + "\n".join(logs[-20:])
+                )
             result = json.loads(result_path.read_text(encoding="utf-8"))
             if not result.get("ok"):
-                raise RuntimeError((str(result.get("error") or "LTX ConvRot runtime failed") + "\n" + "\n".join(logs[-20:])).strip())
+                raise RuntimeError(
+                    (
+                        str(result.get("error") or "LTX ConvRot runtime failed")
+                        + "\n"
+                        + "\n".join(logs[-20:])
+                    ).strip()
+                )
             return result
 
     def unload(self) -> None:
