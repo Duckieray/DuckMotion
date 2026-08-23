@@ -22,6 +22,11 @@ API_BY_HASH = "https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
 MAX_API_BYTES = 8 * 1024 * 1024
 MAX_RECIPE_BYTES = 32 * 1024 * 1024
 USER_AGENT = "DuckMotion/1 checkpoint-provenance"
+CIVITAI_TOKEN_ENV_VARS = (
+    "CIVITAI_TOKEN",
+    "CIVITAI_API_KEY",
+    "CIVITAI_API_TOKEN",
+)
 
 
 def _trusted_civitai_url(url: str) -> bool:
@@ -35,9 +40,17 @@ def _trusted_civitai_url(url: str) -> bool:
     }
 
 
+def _civitai_token() -> str:
+    for env_var in CIVITAI_TOKEN_ENV_VARS:
+        token = str(os.getenv(env_var) or "").strip()
+        if token:
+            return token
+    return ""
+
+
 def _headers(accept: str) -> dict[str, str]:
     headers = {"Accept": accept, "User-Agent": USER_AGENT}
-    token = str(os.getenv("CIVITAI_API_TOKEN") or "").strip()
+    token = _civitai_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
