@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from ltx_convrot_assets import is_ltx25_convrot_path
+
 
 UNKNOWN_ARCHITECTURE = "unknown"
 UNSUPPORTED_BACKEND = "unsupported"
@@ -108,7 +110,7 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
             role = _gguf_pair_role(path)
             if role:
                 detection["pair_role"] = role
-        elif suffix == ".safetensors" and "convrot" in filename_tokens and "ltx" in filename_tokens:
+        elif suffix == ".safetensors" and is_ltx25_convrot_path(path):
             detection["format"] = "int8_convrot"
         return filename_tokens, detection
 
@@ -139,7 +141,9 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
         "confidence": "medium",
         "format": "diffusers",
     }
-    if "convrot" in tokens and "ltx" in tokens and ".safetensors" in tokens:
+    if ".safetensors" in tokens and "ltx" in tokens and (
+        "convrot" in tokens or "redgraft" in tokens
+    ):
         detection["format"] = "int8_convrot"
     return tokens, detection
 

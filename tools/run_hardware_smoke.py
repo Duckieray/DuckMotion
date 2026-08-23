@@ -87,12 +87,18 @@ def _make_source(root: Path) -> Path:
     return path
 
 
+def _item_text(item: dict) -> str:
+    return f"{item.get('name', '')} {item.get('source', '')}".lower()
+
+
 def _find_model(
     items: list[dict],
     explicit: str | None,
-    patterns: tuple[str, ...],
+    patterns: tuple[str, ...] = (),
     *,
+    any_patterns: tuple[str, ...] = (),
     excluded: tuple[str, ...] = (),
+    require_audio: bool | None = None,
 ) -> dict | None:
     if explicit:
         target = explicit.lower()
@@ -100,10 +106,19 @@ def _find_model(
             if str(item.get("name") or "").lower() == target or str(item.get("source") or "").lower() == target:
                 return item
         return None
+
     for item in items:
-        text = f"{item.get('name', '')} {item.get('source', '')}".lower()
-        if all(pattern in text for pattern in patterns) and not any(pattern in text for pattern in excluded):
-            return item
+        text = _item_text(item)
+        capabilities = dict(item.get("capabilities") or {})
+        if any(pattern in text for pattern in excluded):
+            continue
+        if patterns and not all(pattern in text for pattern in patterns):
+            continue
+        if any_patterns and not any(pattern in text for pattern in any_patterns):
+            continue
+        if require_audio is not None and bool(capabilities.get("audio_output")) != require_audio:
+            continue
+        return item
     return None
 
 
@@ -166,57 +181,67 @@ def _submit(api_base: str, payload: dict, timeout: float) -> tuple[dict, float]:
 def _rows(args, items: list[dict], image_path: str | None) -> list[dict]:
     wan5 = _find_model(items, args.wan_5b_model, ("wan2.2", "ti2v", "5b"))
     wan_i2v = _find_model(items, args.wan_i2v_model, ("wan2.2", "i2v", "a14b"))
-    ltx = _find_model(items, args.ltx_model, ("ltx-2.5",), excluded=("convrot", "redgraft"))
-    ltx_convrot = _find_model(items, getattr(args, "ltx_convrot_model", None), ("convrot",))
+    ltx = _find_model(
+        items,
+        args.ltx_model,
+        any_patterns=("ltx-2.5", "ltx2.5", "ltx25"),
+        excluded=("convrot", "redgraft"),
+        require_audio=True,
+    )
+    if ltx is None and not args.ltx_model:
+        # Public descriptors intentionally hide architecture/backend IDs. Audio
+        # output is currently unique to LTX among installed video runtimes, so
+        # this is a robust fallback for cached LTX snapshots whose display name
+        # does not preserve the canonical repo spelling.
+        ltx = _find_model(
+            items,
+            None,
+            excluded=("convrot", "redgraft", ".safetensors"),
+            require_audio=True,
+        )
+    ltx_convrot = _find_model(
+        items,
+        getattr(args, "ltx_convrot_model", None),
+        any_patterns=("convrot", "redgraft"),
+        require_audio=True,
+    )
 
     def row(name, model, payload, *, heavy=False, optional=False):
         return {"row": name, "model": model, "payload": payload, "heavy": heavy, "optional": optional}
 
     rows: list[dict] = []
-    if wan5:
-        rows.extend(
-            [
-                row("wan-ti2v-5b-canary", wan5, {"prompt": PROMPT, "width": 640, "height": 384, "num_frames": 33, "fps": 24, "num_inference_steps": 12, "guidance_scale": 5.0, "seed": 0}),
-                row("wan-ti2v-5b-default", wan5, {"prompt": PROMPT, "width": 1280, "height": 704, "num_frames": 121, "fps": 24, "num_inference_steps": 50, "guidance_scale": 5.0, "seed": 0}, heavy=True),
-            ]
-        )
-    else:
-        rows.append(row("wan-ti2v-5b", None, {}))
+    rows.extend(
+        [
+            row("wan-ti2v-5b-canary", wan5, {"prompt": PROMPT, "width": 640, "height": 384, "num_frames": 33, "fps": 24, "num_inference_steps": 12, "guidance_scale": 5.0, "seed": 0}),
+            row("wan-ti2v-5b-default", wan5, {"prompt": PROMPT, "width": 1280, "height": 704, "num_frames": 121, "fps": 24, "num_inference_steps": 50, "guidance_scale": 5.0, "seed": 0}, heavy=True),
+        ]
+    )
 
-    if wan_i2v:
-        rows.append(
-            row(
-                "wan-i2v-a14b-canary",
-                wan_i2v,
-                {"prompt": PROMPT, "image_path": image_path, "width": 512, "height": 320, "num_frames": 17, "fps": 16, "num_inference_steps": 12, "guidance_scale": 5.0, "seed": 0},
-                heavy=True,
-                optional=True,
-            )
+    rows.append(
+        row(
+            "wan-i2v-a14b-canary",
+            wan_i2v,
+            {"prompt": PROMPT, "image_path": image_path, "width": 512, "height": 320, "num_frames": 17, "fps": 16, "num_inference_steps": 12, "guidance_scale": 5.0, "seed": 0},
+            heavy=True,
+            optional=True,
         )
-    else:
-        rows.append(row("wan-i2v-a14b-canary", None, {}, heavy=True, optional=True))
+    )
 
-    if ltx:
-        rows.extend(
-            [
-                row("ltx25-t2v-canary", ltx, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
-                row("ltx25-i2v-canary", ltx, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
-                row("ltx25-t2v-default", ltx, {"prompt": PROMPT, "width": 1536, "height": 1024, "num_frames": 121, "fps": 24, "seed": 0}, heavy=True),
-            ]
-        )
-    else:
-        rows.append(row("ltx25", None, {}))
+    rows.extend(
+        [
+            row("ltx25-t2v-canary", ltx, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+            row("ltx25-i2v-canary", ltx, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+            row("ltx25-t2v-default", ltx, {"prompt": PROMPT, "width": 1536, "height": 1024, "num_frames": 121, "fps": 24, "seed": 0}, heavy=True),
+        ]
+    )
 
-    if ltx_convrot:
-        rows.extend(
-            [
-                row("ltx25-convrot-t2v-canary", ltx_convrot, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
-                row("ltx25-convrot-i2v-canary", ltx_convrot, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
-                row("ltx25-convrot-default", ltx_convrot, {"prompt": PROMPT, "width": 1152, "height": 768, "num_frames": 241, "fps": 24, "seed": 0}, heavy=True),
-            ]
-        )
-    else:
-        rows.append(row("ltx25-convrot", None, {}))
+    rows.extend(
+        [
+            row("ltx25-convrot-t2v-canary", ltx_convrot, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+            row("ltx25-convrot-i2v-canary", ltx_convrot, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+            row("ltx25-convrot-default", ltx_convrot, {"prompt": PROMPT, "width": 1152, "height": 768, "num_frames": 241, "fps": 24, "seed": 0}, heavy=True),
+        ]
+    )
     return rows
 
 
@@ -250,6 +275,10 @@ def main() -> int:
         "api_base": api_base,
         "execute": args.execute,
         "include_heavy": args.include_heavy,
+        "available_models": [
+            {"name": item.get("name"), "source": item.get("source"), "ready": bool(item.get("ready"))}
+            for item in items
+        ],
         "rows": [],
     }
 
@@ -269,6 +298,18 @@ def main() -> int:
             if args.only:
                 selected = set(args.only)
                 rows = [row for row in rows if row["row"] in selected]
+                missing_names = sorted(selected.difference(row["row"] for row in rows))
+                for missing_name in missing_names:
+                    rows.append(
+                        {
+                            "row": missing_name,
+                            "model": None,
+                            "payload": {},
+                            "heavy": False,
+                            "optional": False,
+                            "selection_error": "unknown smoke row name",
+                        }
+                    )
 
             for spec in rows:
                 model = spec.get("model")
@@ -282,7 +323,7 @@ def main() -> int:
                 report["rows"].append(entry)
                 if model is None:
                     entry["status"] = "skipped" if spec.get("optional") else "blocked"
-                    entry["reason"] = "required smoke target is not discovered"
+                    entry["reason"] = str(spec.get("selection_error") or "required smoke target is not discovered")
                     print(f"{entry['status'].upper():7} {spec['row']}: {entry['reason']}")
                     continue
                 weights = model.get("weights") or {}
