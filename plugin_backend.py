@@ -59,7 +59,27 @@ def _weights_state(item: dict[str, Any]) -> dict[str, Any]:
     return {"present": False, "source": source, "kind": "missing"}
 
 
-def _runtime_readiness() -> dict[str, Any]:
+def _effective_public_model(descriptor, runtime: dict[str, Any]) -> dict[str, Any]:
+    """Apply private runtime/profile semantics to an architecture-free payload.
+
+    Execution profile IDs remain diagnostic/internal. The browser only needs the
+    resulting effective defaults and constraints for the selected checkpoint.
+    """
+    public = descriptor.to_public_dict()
+    defaults = dict(public.get("defaults") or {})
+    constraints = dict(public.get("constraints") or {})
+    profile_defaults = runtime.get("profile_defaults")
+    profile_constraints = runtime.get("profile_constraints")
+    if isinstance(profile_defaults, dict):
+        defaults.update(profile_defaults)
+    if isinstance(profile_constraints, dict):
+        constraints.update(profile_constraints)
+    public["defaults"] = defaults
+    public["constraints"] = constraints
+    return public
+
+
+def _resolved_catalog_rows() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     config = services.load_config()
     catalog = discover_video_models(config)
     _register_installed_backends()
@@ -67,10 +87,11 @@ def _runtime_readiness() -> dict[str, Any]:
     for item in catalog.get("items") or []:
         if not isinstance(item, dict):
             continue
-        identity = str(item.get("repo_id") or item.get("source") or item.get("name") or "").strip()
+        identity = str(
+            item.get("repo_id") or item.get("source") or item.get("name") or ""
+        ).strip()
         name = str(item.get("name") or identity).strip()
         descriptor = describe_video_model(identity, name=name)
-        public = descriptor.to_public_dict()
         if not descriptor.supported:
             runtime = {
                 "ready": False,
@@ -81,20 +102,45 @@ def _runtime_readiness() -> dict[str, Any]:
                 runtime = backend_resolver.readiness(descriptor)
             except Exception as exc:
                 runtime = {"ready": False, "reason": str(exc or exc.__class__.__name__)}
-        rows.append(
-            {
-                **public,
-                "location": item.get("location"),
-                "weights": _weights_state(item),
-                "runtime": runtime,
-                "ready": bool(public.get("supported") and runtime.get("ready")),
-            }
-        )
+        public = _effective_public_model(descriptor, runtime)
+        row = {
+            **public,
+            "location": item.get("location"),
+            "weights": _weights_state(item),
+            "runtime": runtime,
+            "ready": bool(public.get("supported") and runtime.get("ready")),
+        }
+        if item.get("repo_id"):
+            row["repo_id"] = item.get("repo_id")
+        rows.append(row)
+    return rows, catalog
+
+
+def _runtime_readiness() -> dict[str, Any]:
+    rows, catalog = _resolved_catalog_rows()
     supported_rows = [row for row in rows if row.get("supported")]
     return {
         "ready": bool(supported_rows) and all(row.get("ready") for row in supported_rows),
         "count": len(rows),
         "items": rows,
+        "hf_cache": catalog.get("hf_cache"),
+    }
+
+
+def _public_model_catalog() -> dict[str, Any]:
+    """Return effective public models without backend/profile routing metadata."""
+    rows, catalog = _resolved_catalog_rows()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = {
+            key: value
+            for key, value in row.items()
+            if key not in {"runtime", "weights"}
+        }
+        items.append(item)
+    return {
+        "count": len(items),
+        "items": items,
         "hf_cache": catalog.get("hf_cache"),
     }
 
@@ -145,7 +191,9 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
     @router.get("/models")
     @router.get("/models/discover")
     def models() -> dict[str, Any]:
-        return discover_video_models(services.load_config())
+        # Discovery remains pure; this composition layer overlays privately
+        # resolved recipe defaults/constraints before returning public models.
+        return _public_model_catalog()
 
     @router.get("/engine/runtime")
     def engine_runtime() -> dict[str, Any]:
