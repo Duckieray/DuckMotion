@@ -5,20 +5,24 @@ Status: **preparation / no model-load claim yet**
 Target host: NVIDIA RTX 5070 Ti 16 GB. Runtime and browser architecture are
 model-driven; this document defines the first real Wan/LTX hardware validation.
 
-## 1. Prepare isolated runtimes
+## 1. Prepare DuckMotion
 
-From any shell with normal Python/venv support:
+Normal users should prepare runtimes and persist their shared model root with one
+command:
+
+```bash
+python tools/setup.py --models /path/to/models
+```
+
+The setup command creates the isolated Wan, standard LTX, and ConvRot runtimes at
+the deterministic `~/.local/share/duckmotion/runtimes/` location. DuckMotion
+finds those interpreters automatically; `DUCKMOTION_*_PYTHON` variables are
+advanced overrides only.
+
+For targeted runtime maintenance the lower-level command remains available:
 
 ```bash
 python tools/prepare_model_runtimes.py all
-```
-
-The tool defaults to PyTorch 2.12.1 from the CUDA 13.0 wheel channel and prints:
-
-```bash
-export DUCKMOTION_WAN_PYTHON=...
-export DUCKMOTION_LTX_PYTHON=...
-export DUCKMOTION_LTX_CONVROT_PYTHON=...
 ```
 
 Wan is pinned to Diffusers 0.39.0 and includes `gguf==0.19.0` so both normal
@@ -30,7 +34,15 @@ a Python library only; no ComfyUI server/UI/API is started.
 
 Runtime setup never downloads model weights.
 
-Before model loading, start WebbDuck/DuckMotion and check:
+Before model loading, run:
+
+```bash
+python tools/doctor.py
+```
+
+Doctor scans the configured model root plus the normal Hugging Face cache and
+performs the same non-loading runtime/asset gates used by DuckMotion. After
+starting WebbDuck, the equivalent live API surface is:
 
 ```text
 GET /runtime-readiness
@@ -108,7 +120,9 @@ ltx-2.5-audio-vae-bf16.safetensors
 ```
 
 DuckMotion should discover the REDGraft checkpoint as one normal public model.
-The companion/support files are runtime dependencies, not separate user model
+The checkpoint does not need to be renamed merely to contain the word `convrot`;
+REDGraft identity and safetensors metadata are part of detection. The
+companion/support files are runtime dependencies, not separate user model
 selections.
 
 ## 3. Smoke order
@@ -152,7 +166,7 @@ Run the two practical REDGraft canaries explicitly:
 ```bash
 python tools/run_hardware_smoke.py \
   --execute \
-  --ltx-convrot-model "/path/to/REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors" \
+  --ltx-convrot-model "/path/to/REDGraft.safetensors" \
   --only ltx25-convrot-t2v-canary \
   --only ltx25-convrot-i2v-canary
 ```
@@ -162,7 +176,7 @@ After both canaries pass, opt into the heavier saved-recipe row:
 ```bash
 python tools/run_hardware_smoke.py \
   --execute --include-heavy \
-  --ltx-convrot-model "/path/to/REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors" \
+  --ltx-convrot-model "/path/to/REDGraft.safetensors" \
   --only ltx25-convrot-default
 ```
 
@@ -172,7 +186,7 @@ existing Wan override arguments. For a T2V-capable GGUF checkpoint:
 ```bash
 python tools/run_hardware_smoke.py \
   --execute \
-  --wan-5b-model "/path/to/..._H.gguf" \
+  --wan-5b-model "/path/to/...H.gguf" \
   --only wan-ti2v-5b-canary
 ```
 
@@ -181,7 +195,7 @@ For an I2V-capable GGUF checkpoint:
 ```bash
 python tools/run_hardware_smoke.py \
   --execute --include-heavy \
-  --wan-i2v-model "/path/to/..._H.gguf" \
+  --wan-i2v-model "/path/to/...H.gguf" \
   --only wan-i2v-a14b-canary
 ```
 
