@@ -72,6 +72,31 @@ If zero provenance providers match, setup reports that fact and leaves the model
 blocked. If multiple providers claim the same checkpoint, DuckMotion refuses to
 choose one automatically.
 
+## Optional provider credentials
+
+Public provider access is anonymous by default. A normal DuckMotion install does
+not require Hugging Face or Civitai API tokens.
+
+When a gated/private asset needs authentication, users may save optional Hugging
+Face or Civitai credentials in WebbDuck Settings. DuckMotion CLI setup reads the
+shared local `~/.webbduck/provider_credentials.json` contract directly, so
+WebbDuck does not need to be running and no shell export is required. The token
+contents are never part of model metadata, provenance cache records, recipes, or
+job payloads.
+
+Explicit environment variables remain advanced overrides and take precedence:
+
+```text
+HF_TOKEN
+HUGGING_FACE_HUB_TOKEN
+CIVITAI_TOKEN
+CIVITAI_API_TOKEN
+CIVITAI_API_KEY
+```
+
+`WEBBDUCK_CREDENTIALS_FILE` may override the shared credentials-file path for
+advanced deployments.
+
 ## Recipe resolution
 
 Recipe resolution may use:
