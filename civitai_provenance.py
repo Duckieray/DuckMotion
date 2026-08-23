@@ -9,6 +9,7 @@ model version. Model weights are never re-downloaded by this provider.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -34,6 +35,14 @@ def _trusted_civitai_url(url: str) -> bool:
     }
 
 
+def _headers(accept: str) -> dict[str, str]:
+    headers = {"Accept": accept, "User-Agent": USER_AGENT}
+    token = str(os.getenv("CIVITAI_API_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _read_limited(response, limit: int) -> bytes:
     payload = response.read(limit + 1)
     if len(payload) > limit:
@@ -42,10 +51,7 @@ def _read_limited(response, limit: int) -> bytes:
 
 
 def _get_json(url: str, *, limit: int) -> Any:
-    request = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
-    )
+    request = urllib.request.Request(url, headers=_headers("application/json"))
     with urllib.request.urlopen(request, timeout=30) as response:
         raw = _read_limited(response, limit)
     return json.loads(raw.decode("utf-8"))
@@ -60,10 +66,7 @@ def _safe_filename(name: str, fallback: str) -> str:
 def _download_recipe(url: str, destination: Path) -> Path:
     if not _trusted_civitai_url(url):
         raise ValueError("Civitai recipe file declares an untrusted download URL")
-    request = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json,*/*", "User-Agent": USER_AGENT},
-    )
+    request = urllib.request.Request(url, headers=_headers("application/json,*/*"))
     with urllib.request.urlopen(request, timeout=60) as response:
         raw = _read_limited(response, MAX_RECIPE_BYTES)
     # A provenance sidecar can be any exported-workflow object, but it must be
@@ -121,29 +124,34 @@ def resolve_civitai_provenance(
     metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     recipe_paths: list[str] = []
+    recipe_errors: list[str] = []
+    recipe_candidates = 0
     for index, item in enumerate(files):
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
         if not name.lower().endswith(".json"):
             continue
+        recipe_candidates += 1
         size_kb = item.get("sizeKB")
         try:
             if size_kb is not None and float(size_kb) * 1024 > MAX_RECIPE_BYTES:
+                recipe_errors.append(f"{name}: file is larger than the JSON sidecar safety limit")
                 continue
         except (TypeError, ValueError):
             pass
         download_url = str(item.get("downloadUrl") or "").strip()
         if not download_url:
+            recipe_errors.append(f"{name}: no download URL was published")
             continue
         destination = provider_root / _safe_filename(name, f"recipe-{index}.json")
         try:
             recipe_paths.append(str(_download_recipe(download_url, destination)))
-        except Exception:
+        except Exception as exc:
             # One malformed/unavailable sidecar must not erase otherwise useful
             # provenance. Recipe adapters will evaluate the successfully cached
             # candidates below.
-            continue
+            recipe_errors.append(f"{name}: {exc}")
 
     model = payload.get("model") if isinstance(payload.get("model"), dict) else {}
     source_url = None
@@ -156,4 +164,8 @@ def resolve_civitai_provenance(
         "version_name": payload.get("name"),
         "recipe_paths": recipe_paths,
         "metadata_path": str(metadata_path),
+        "diagnostics": {
+            "recipe_candidates": recipe_candidates,
+            "recipe_errors": recipe_errors,
+        },
     }
