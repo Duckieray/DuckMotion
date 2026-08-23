@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prepare recipe-declared support assets for discovered DuckMotion models.
 
-This tool is architecture- and model-name agnostic. Registered providers discover
-checkpoints and normalize their recipe-declared assets; this tool only resolves
-trusted download sources and fetches missing files.
+This tool is architecture- and model-name agnostic. Registered asset providers
+discover checkpoints and normalize their recipe-declared assets. When a local
+recipe is absent, generic provenance providers may identify the exact checkpoint
+by strong content hash and cache trusted recipe sidecars for offline use.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from model_asset_providers import ModelAssetProvider, model_asset_providers
+from model_provenance import prepare_checkpoint_provenance
+from model_recipes import execution_profiles
+from provider_credentials import apply_provider_credentials_to_environment
+from provenance_providers import register_builtin_provenance_providers
 from runtime_paths import resolve_runtime_python
 
 
@@ -105,6 +110,52 @@ def _download_hf(
     return False, detail
 
 
+def _provenance_message(checkpoint: Path, result: dict) -> str:
+    if result.get("matched"):
+        record = dict(result.get("record") or {})
+        source = str(record.get("source_id") or record.get("source_url") or "trusted provider")
+        recipes = record.get("recipe_paths") or []
+        if recipes:
+            cache_note = "cached" if result.get("cached") else "cached now"
+            return f"{checkpoint.name}: provenance matched {source}; {cache_note} {len(recipes)} recipe candidate(s)"
+        diagnostics = record.get("diagnostics") if isinstance(record.get("diagnostics"), dict) else {}
+        candidates = int(diagnostics.get("recipe_candidates") or 0)
+        errors = diagnostics.get("recipe_errors") or []
+        if candidates:
+            detail = f": {errors[0]}" if errors else ""
+            return f"{checkpoint.name}: provenance matched {source}; {candidates} JSON sidecar(s) were listed but not cached{detail}"
+        return f"{checkpoint.name}: provenance matched {source}, but it publishes no JSON recipe sidecar"
+    if result.get("ambiguous"):
+        return f"{checkpoint.name}: checkpoint provenance is ambiguous across trusted providers"
+    errors = result.get("errors") or []
+    if errors:
+        return f"{checkpoint.name}: provenance lookup unavailable: {errors[0]}"
+    return f"{checkpoint.name}: no trusted checkpoint provenance match was found"
+
+
+def _asset_declaration(
+    profile_id: str,
+    kind: str,
+    declaration: dict,
+) -> tuple[str, str]:
+    """Merge trusted profile sources without substituting custom recipe assets."""
+    name = str((declaration or {}).get("name") or "").strip()
+    url = str((declaration or {}).get("url") or "").strip()
+    profile = execution_profiles.get(profile_id)
+    fallback = (
+        dict(profile.asset_defaults.get(kind) or {})
+        if profile is not None and isinstance(profile.asset_defaults, dict)
+        else {}
+    )
+    fallback_name = str(fallback.get("name") or "").strip()
+    fallback_url = str(fallback.get("url") or "").strip()
+    if not name and fallback_name:
+        name = fallback_name
+    if not url and name and fallback_name and name.lower() == fallback_name.lower():
+        url = fallback_url
+    return name, url
+
+
 def _prepare_provider(
     provider: ModelAssetProvider,
     models_dir: Path,
@@ -124,27 +175,60 @@ def _prepare_provider(
     for checkpoint in checkpoints:
         state = provider.inspect(checkpoint, models_dir=str(models_dir))
         profile = str(state.get("execution_profile") or "").strip()
+        provenance_result: dict | None = None
         if not profile:
-            blockers.append(
-                f"{checkpoint.name}: format recognized, but no supported execution recipe was resolved"
-            )
+            print(f"  identifying {checkpoint.name} by SHA256 provenance (cached after first run)")
+            provenance_result = prepare_checkpoint_provenance(checkpoint)
+            print(f"    {_provenance_message(checkpoint, provenance_result)}")
+            # Provenance providers only cache candidate JSON. The model-specific
+            # recipe adapter remains authoritative about whether any candidate
+            # actually maps to an installed execution profile.
+            state = provider.inspect(checkpoint, models_dir=str(models_dir))
+            profile = str(state.get("execution_profile") or "").strip()
+
+        if not profile:
+            if provenance_result and provenance_result.get("matched"):
+                record = dict(provenance_result.get("record") or {})
+                if record.get("recipe_paths"):
+                    blockers.append(
+                        f"{checkpoint.name}: trusted provenance was resolved, but none of its recipe sidecars map to an installed execution profile"
+                    )
+                else:
+                    diagnostics = record.get("diagnostics") if isinstance(record.get("diagnostics"), dict) else {}
+                    candidates = int(diagnostics.get("recipe_candidates") or 0)
+                    errors = diagnostics.get("recipe_errors") or []
+                    if candidates:
+                        detail = f": {errors[0]}" if errors else ""
+                        blockers.append(
+                            f"{checkpoint.name}: provenance listed {candidates} recipe sidecar(s), but none could be cached{detail}"
+                        )
+                    else:
+                        blockers.append(
+                            f"{checkpoint.name}: trusted provenance was resolved, but no recipe sidecar is published for this version"
+                        )
+            else:
+                blockers.append(
+                    f"{checkpoint.name}: format recognized, but no supported execution recipe was resolved"
+                )
             continue
 
         manifest = dict(state.get("asset_manifest") or {})
         resolved = dict(state.get("assets") or {})
-        for kind, declaration in manifest.items():
+        profile_obj = execution_profiles.get(profile)
+        asset_roles = profile_obj.required_assets if profile_obj is not None else tuple(manifest.keys())
+        for kind in asset_roles:
             if resolved.get(kind):
                 continue
-            name = str((declaration or {}).get("name") or "").strip()
-            url = str((declaration or {}).get("url") or "").strip()
+            declaration = dict(manifest.get(kind) or {})
+            name, url = _asset_declaration(profile, kind, declaration)
             if not name:
                 blockers.append(
-                    f"{checkpoint.name}: recipe '{profile}' does not declare required asset role '{kind}'"
+                    f"{checkpoint.name}: recipe '{profile}' does not declare required asset role '{kind}' and the profile has no default"
                 )
                 continue
             if not url:
                 blockers.append(
-                    f"{checkpoint.name}: {name} has no trusted source URL in the recipe"
+                    f"{checkpoint.name}: {name} has no trusted source URL in the recipe/profile"
                 )
                 continue
             print(f"  fetching {name}")
@@ -160,7 +244,7 @@ def _prepare_provider(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Prepare recipe-declared support assets for discovered DuckMotion models."
+        description="Prepare checkpoint provenance and recipe-declared support assets for DuckMotion models."
     )
     parser.add_argument(
         "--models",
@@ -174,7 +258,12 @@ def main() -> int:
     if not models_dir.exists() or not models_dir.is_dir():
         parser.error(f"Model directory does not exist: {models_dir}")
 
-    print("Preparing model-declared support assets")
+    # Public provider access remains anonymous by default. If the user opted to
+    # save credentials in WebbDuck Settings, inherit them for provenance and HF
+    # child-download processes without requiring shell exports.
+    apply_provider_credentials_to_environment()
+    register_builtin_provenance_providers()
+    print("Preparing model provenance and declared support assets")
     blockers: list[str] = []
     status = 0
     for provider in model_asset_providers.providers():
@@ -188,18 +277,19 @@ def main() -> int:
 
     if blockers:
         print("")
-        print("Some model-declared assets are not ready.")
+        print("Some model recipes/assets are not ready.")
         print(
-            "DuckMotion does not require a special folder layout; fix the reported "
-            "recipe/access issue and rerun setup."
+            "DuckMotion does not require a special folder layout; resolve the reported "
+            "provenance/recipe/access issue and rerun setup."
         )
         print(
-            "For gated Hugging Face assets, accept the repository terms and "
-            "authenticate normally."
+            "For gated provider assets, accept the provider's terms if required. "
+            "Optional Hugging Face/Civitai tokens can be saved in WebbDuck Settings; "
+            "environment variables remain advanced overrides."
         )
         return status or 3
 
-    print("Model-declared support assets are ready.")
+    print("Model provenance and declared support assets are ready.")
     return 0
 
 

@@ -1,10 +1,10 @@
 # LTX-2.5 INT8 ConvRot
 
-Status: **format/runtime/profile contracts available; real-model GPU smoke validation pending**
+Status: **format/runtime/profile/provenance contracts available; real-model GPU smoke validation pending**
 
 DuckMotion treats LTX-2.5 INT8 ConvRot as a checkpoint **format**, not as a model
 brand or a sampling recipe. Users select the checkpoint normally; there is no
-ConvRot, Comfy, backend, or recipe selector in the product UI.
+ConvRot, Comfy, provenance, backend, or recipe selector in the product UI.
 
 ## Separation of concerns
 
@@ -15,11 +15,16 @@ Checkpoint descriptor
   architecture: ltx25
   source_format: int8_convrot
 
+Checkpoint provenance
+  strong content fingerprint
+  canonical source/version identity
+  cached declarative recipe candidates
+
 Execution profile
   profile id
   worker entrypoint
   required runtime nodes
-  required asset roles
+  required asset roles + trusted standard sources
   defaults / constraints
 
 Display identity
@@ -28,7 +33,8 @@ Display identity
 
 A checkpoint being ConvRot does not automatically mean it should use one
 particular resolution, sigma schedule, asset set, or workflow. Those belong to
-the resolved execution profile.
+the resolved execution profile. Provenance can identify the exact file and
+supply declarative evidence, but provenance names/IDs never select that profile.
 
 The current installed profile is:
 
@@ -75,10 +81,40 @@ DuckMotion imports that checkout directly as a Python library. It does **not**:
 `tools/setup.py` repairs this runtime-owned checkout even when package
 reinstallation is skipped.
 
+## Provenance resolution
+
+A recognized ConvRot checkpoint with no usable local companion recipe may be
+identified during setup by a registered `CheckpointProvenanceProvider`.
+
+The first built-in provider uses Civitai's public model-version-by-hash API:
+
+```text
+local checkpoint
+  -> full SHA256
+  -> Civitai model version by hash
+  -> verify returned files include that exact SHA256
+  -> cache model-version metadata
+  -> cache small published JSON sidecar candidates
+```
+
+This is setup-time trust work only. DuckMotion never re-downloads or replaces the
+selected checkpoint. The fingerprint and provenance record are stored under
+`~/.cache/duckmotion/provenance/` by default and tied to the local file's change
+state. A changed checkpoint invalidates the old record.
+
+Once recipe JSON has been cached, doctor/readiness do not contact Civitai or
+re-hash the unchanged checkpoint. `CIVITAI_API_TOKEN` is only an optional
+advanced credential if access to a published sidecar requires it.
+
+Exactly one provenance provider must match. Zero matches leave the checkpoint
+unresolved; multiple matches are treated as ambiguous. Even one valid provenance
+match does **not** select an execution profile. Its cached JSON still has to pass
+the same recipe adapters as a local companion.
+
 ## Recipe resolution
 
-A recognized ConvRot checkpoint is runnable only after its companion recipe maps
-to an installed execution profile.
+A recognized ConvRot checkpoint is runnable only after a local or
+provenance-cached companion recipe maps to an installed execution profile.
 
 DuckMotion accepts two recipe inputs today.
 
@@ -120,7 +156,9 @@ declarative evidence. It extracts node types and declared model records, then
 maps that evidence to a registered execution profile.
 
 The workflow itself is never executed. If zero profiles or multiple profiles
-match the evidence, DuckMotion refuses to guess.
+match the evidence, DuckMotion refuses to guess. If multiple companion candidates
+independently map to supported profiles, DuckMotion also refuses to pick one
+arbitrarily.
 
 ## Asset preparation
 
@@ -140,14 +178,26 @@ DuckMotion first searches the checkpoint directory, inferred/configured shared
 model roots, and its own asset cache recursively. Assets do not need a Comfy-style
 folder layout.
 
-If a missing asset declares a trusted `https://huggingface.co/.../resolve/...`
-source, setup can fetch it through the model runtime's normal Hugging Face
-credentials. Gated repositories remain gated: DuckMotion does not accept terms
-or bypass authentication on the user's behalf.
+The current two-stage AV execution profile owns trusted standard sources for:
+
+- `gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors` from
+  `Lightricks/LTX-2.5`;
+- `ltx-2.3-spatial-upscaler-x2-1.1.safetensors` from `Lightricks/LTX-2.3`;
+- `ltx-2.5-video-vae-conv-bf16.safetensors` from `Lightricks/LTX-2.5`;
+- `ltx-2.5-audio-vae-bf16.safetensors` from `Lightricks/LTX-2.5`.
+
+A profile default can fill a missing asset role, or a missing source URL for the
+same standard filename. It **cannot** replace a differently named custom asset
+from a recipe.
+
+Missing supported assets are fetched through the owning runtime's normal
+`huggingface_hub` client. Gated repositories remain gated: DuckMotion does not
+accept terms or bypass authentication on the user's behalf.
 
 A format can therefore be supported while an individual checkpoint remains
-blocked because its recipe is missing, ambiguous, unsupported, or points to
-unavailable assets. `doctor.py` reports that distinction before model loading.
+blocked because provenance is missing/ambiguous, its recipe is missing,
+ambiguous, unsupported, or its assets are unavailable. `doctor.py` reports those
+distinctions before model loading.
 
 ## Current two-stage AV profile
 
@@ -244,27 +294,32 @@ Add an `ExecutionProfile` that declares:
 - worker entrypoint;
 - structural evidence used by workflow adapters;
 - required runtime nodes;
-- required asset roles;
+- required asset roles and any trusted standard sources;
 - profile defaults/constraints.
 
-If its asset shape needs different interpretation, extend/register an asset
-provider. Generic setup continues to call only `prepare_model_assets.py`.
+If a new public catalog can identify exact checkpoints, register a generic
+`CheckpointProvenanceProvider`. If its asset shape needs different
+interpretation, extend/register an asset provider. Generic setup continues to
+call only `prepare_model_assets.py`.
 
-If two profiles match the same structural evidence, the registry deliberately
-returns no profile rather than choosing one arbitrarily.
+Never let provenance provider model/version names select a profile. If two
+providers, profiles, or supported recipe candidates are ambiguous, refuse to
+guess.
 
 ## Validation
 
 Unit/contract coverage protects:
 
-- profile-owned defaults and runtime-node requirements;
+- profile-owned defaults, standard asset sources, and runtime-node requirements;
 - checkpoint format detection independent of recipe selection;
+- strong checkpoint provenance caching/invalidation;
+- exact-SHA provenance validation and ambiguity refusal;
 - explicit DuckMotion manifests;
 - exported-workflow adaptation;
 - generic asset-provider iteration;
 - arbitrary shared-model layouts;
 - no brand-specific recipe table;
-- ambiguous profile evidence refusing to guess;
+- ambiguous profile/recipe evidence refusing to guess;
 - the current two-stage AV operation ordering and constants.
 
 `tools/run_hardware_smoke.py` identifies ConvRot models using readiness

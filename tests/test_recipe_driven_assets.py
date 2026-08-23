@@ -7,7 +7,11 @@ from pathlib import Path
 
 import ltx_convrot_assets as assets
 from model_asset_providers import model_asset_providers
-from model_recipes import ExecutionProfile, ExecutionProfileRegistry
+from model_recipes import (
+    ExecutionProfile,
+    ExecutionProfileRegistry,
+    LTX25_CONVROT_TWO_STAGE_AV,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,10 +64,13 @@ def _generic_recipe(checkpoint_name: str) -> dict:
             {"type": "VAELoader", "widgets_values": [names["audio_vae"]]},
         ]
     )
+    # Exported-workflow inference must prove both the node surface and the
+    # distinctive semantics of this execution profile.
     return {
         "checkpoint": checkpoint_name,
         "nodes": nodes,
         "asset_names": names,
+        "recipe_signature": sorted(LTX25_CONVROT_TWO_STAGE_AV.evidence_literals),
     }
 
 
@@ -87,6 +94,12 @@ def test_generic_convrot_checkpoint_uses_workflow_adapter_not_brand_name(tmp_pat
     assert result["recipe_adapter"] == "workflow_adapter"
     assert result["missing"] == []
     assert all(result["assets"].values())
+
+
+def test_same_node_surface_with_different_recipe_semantics_does_not_match_profile():
+    recipe = _generic_recipe("AcmeCinemaLTX25ConvRotQ8.safetensors")
+    recipe["recipe_signature"] = ["euler", "bicubic", "different sigma schedule"]
+    assert assets.execution_profile(recipe) is None
 
 
 def test_explicit_duckmotion_manifest_needs_no_comfy_workflow_shape(tmp_path: Path):

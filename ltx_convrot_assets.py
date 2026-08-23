@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from model_provenance import cached_provenance, cached_recipe_paths
 from model_recipes import (
     LTX25_CONVROT_TWO_STAGE_AV,
     execution_profiles,
@@ -96,31 +97,56 @@ def read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def find_companion_config(checkpoint: str | Path) -> Path | None:
-    checkpoint_path = Path(checkpoint).expanduser()
+def _local_companion_candidates(checkpoint_path: Path) -> list[Path]:
     parent = checkpoint_path.parent
     if not parent.exists():
-        return None
+        return []
     try:
         candidates = sorted(parent.glob("*.json"), key=lambda p: p.name.lower())
     except OSError:
-        return None
+        return []
 
     checkpoint_name = checkpoint_path.name.lower()
+    exact: list[Path] = []
     for candidate in candidates:
         payload = read_json(candidate)
         if not payload:
             continue
         values = (value.lower().replace("\\", "/") for value in _walk_strings(payload))
         if any(checkpoint_name == Path(value).name.lower() for value in values):
-            return candidate
+            exact.append(candidate)
+    if exact:
+        return exact + [candidate for candidate in candidates if candidate not in exact]
 
     # Community bundles sometimes rename a checkpoint after exporting its recipe.
     # A single sidecar is deterministic evidence, but profile validation below
     # still has to prove that the recipe is supported.
     if len(candidates) == 1:
-        return candidates[0]
-    return None
+        return candidates
+    return []
+
+
+def companion_config_candidates(checkpoint: str | Path) -> tuple[Path, ...]:
+    checkpoint_path = Path(checkpoint).expanduser()
+    candidates = _local_companion_candidates(checkpoint_path)
+    for candidate in cached_recipe_paths(checkpoint_path):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def find_companion_config(checkpoint: str | Path) -> Path | None:
+    candidates = companion_config_candidates(checkpoint)
+    supported: list[Path] = []
+    for candidate in candidates:
+        payload = read_json(candidate)
+        if payload and execution_profile(payload):
+            supported.append(candidate)
+    if len(supported) == 1:
+        return supported[0]
+    if len(supported) > 1:
+        return None
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _node_types(config: Mapping[str, Any]) -> set[str]:
@@ -132,8 +158,12 @@ def _node_types(config: Mapping[str, Any]) -> set[str]:
     return types
 
 
+def _workflow_literals(config: Mapping[str, Any]) -> set[str]:
+    return {value.strip().lower() for value in _walk_strings(config) if value.strip()}
+
+
 def execution_profile(config: Mapping[str, Any]) -> str | None:
-    """Resolve a supported profile from explicit manifest or structural evidence."""
+    """Resolve a supported profile from explicit manifest or proven workflow evidence."""
     explicit = profile_from_explicit_manifest(
         config,
         architecture=ARCHITECTURE,
@@ -147,7 +177,12 @@ def execution_profile(config: Mapping[str, Any]) -> str | None:
         source_format=SOURCE_FORMAT,
         node_types=_node_types(config),
     )
-    return inferred.profile_id if inferred is not None else None
+    if inferred is None:
+        return None
+    required_literals = {value.strip().lower() for value in inferred.evidence_literals if value.strip()}
+    if required_literals and not required_literals.issubset(_workflow_literals(config)):
+        return None
+    return inferred.profile_id
 
 
 def is_ltx25_convrot_path(value: str | Path) -> bool:
@@ -270,15 +305,57 @@ def _workflow_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "
     return manifest
 
 
+def _merge_profile_asset_defaults(
+    profile_id: str,
+    manifest: Mapping[str, Mapping[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Fill only missing standard declarations owned by the execution profile.
+
+    A profile default may fill an empty role, or the source/directory for the same
+    standard filename. A differently named custom recipe asset is preserved and
+    never silently replaced with the profile default.
+    """
+    profile = execution_profiles.get(profile_id)
+    result: dict[str, dict[str, str]] = {
+        kind: {
+            "name": str((manifest.get(kind) or {}).get("name") or "").strip(),
+            "url": str((manifest.get(kind) or {}).get("url") or "").strip(),
+            "directory": str((manifest.get(kind) or {}).get("directory") or "").strip(),
+        }
+        for kind in ASSET_KINDS
+    }
+    if profile is None:
+        return result
+
+    for kind in profile.required_assets:
+        current = result.setdefault(kind, {"name": "", "url": "", "directory": ""})
+        fallback = dict(profile.asset_defaults.get(kind) or {})
+        fallback_name = str(fallback.get("name") or "").strip()
+        if not current["name"] and fallback_name:
+            current.update(
+                {
+                    "name": fallback_name,
+                    "url": str(fallback.get("url") or "").strip(),
+                    "directory": str(fallback.get("directory") or "").strip(),
+                }
+            )
+            continue
+        if current["name"] and fallback_name and current["name"].lower() == fallback_name.lower():
+            if not current["url"]:
+                current["url"] = str(fallback.get("url") or "").strip()
+            if not current["directory"]:
+                current["directory"] = str(fallback.get("directory") or "").strip()
+    return result
+
+
 def extract_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
-    """Extract required asset roles from any companion accepted by this provider."""
+    """Extract and normalize required asset roles for a supported companion."""
     profile_id = execution_profile(config)
     if not profile_id:
         return {kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS}
     explicit = _explicit_asset_manifest(config, profile_id)
-    if explicit is not None:
-        return explicit
-    return _workflow_asset_manifest(config, checkpoint_name)
+    raw_manifest = explicit if explicit is not None else _workflow_asset_manifest(config, checkpoint_name)
+    return _merge_profile_asset_defaults(profile_id, raw_manifest)
 
 
 def extract_asset_names(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, str]:
@@ -340,15 +417,36 @@ def resolve_named_asset(name: str, roots: Iterable[Path]) -> Path | None:
     return None
 
 
+def _select_recipe(checkpoint_path: Path) -> tuple[Path | None, dict[str, Any], str | None, bool]:
+    candidates = companion_config_candidates(checkpoint_path)
+    supported: list[tuple[Path, dict[str, Any], str]] = []
+    first_payload: tuple[Path, dict[str, Any]] | None = None
+    for candidate in candidates:
+        payload = read_json(candidate)
+        if not payload:
+            continue
+        if first_payload is None:
+            first_payload = (candidate, payload)
+        profile_id = execution_profile(payload)
+        if profile_id:
+            supported.append((candidate, payload, profile_id))
+    if len(supported) == 1:
+        path, payload, profile_id = supported[0]
+        return path, payload, profile_id, False
+    if len(supported) > 1:
+        return None, {}, None, True
+    if first_payload is not None:
+        return first_payload[0], first_payload[1], None, False
+    return None, {}, None, False
+
+
 def inspect_convrot_assets(
     checkpoint: str | Path,
     *,
     models_dir: str | None = None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(checkpoint).expanduser()
-    config_path = find_companion_config(checkpoint_path)
-    config = read_json(config_path) if config_path else {}
-    profile_id = execution_profile(config) if config else None
+    config_path, config, profile_id, ambiguous_recipe = _select_recipe(checkpoint_path)
     profile = execution_profiles.get(profile_id)
     manifest = extract_asset_manifest(config, checkpoint_path.name) if profile else {
         kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS
@@ -368,19 +466,27 @@ def inspect_convrot_assets(
     checkpoint_present = checkpoint_path.exists() and checkpoint_path.is_file()
     if not checkpoint_present:
         missing.insert(0, checkpoint_path.name or str(checkpoint_path))
-    if config_path is None:
+    if ambiguous_recipe:
+        missing.insert(0, "<ambiguous supported companion recipes>")
+    elif config_path is None:
         missing.insert(0, "<companion recipe JSON>")
     elif profile is None:
         missing.insert(0, "<unsupported execution recipe>")
 
     recipe = config.get("duckmotion_recipe") if isinstance(config, Mapping) else None
+    provenance = cached_provenance(checkpoint_path)
     recipe_adapter = "duckmotion_manifest" if isinstance(recipe, Mapping) else ("workflow_adapter" if profile else None)
+    recipe_origin = None
+    if config_path is not None:
+        recipe_origin = "local" if config_path.parent == checkpoint_path.parent else "provenance_cache"
     return {
         "ready": checkpoint_present and config_path is not None and profile is not None and not missing,
         "checkpoint": str(checkpoint_path),
         "config_path": str(config_path) if config_path else None,
         "execution_profile": profile.profile_id if profile else None,
         "recipe_adapter": recipe_adapter,
+        "recipe_origin": recipe_origin,
+        "provenance": provenance,
         "asset_manifest": manifest,
         "asset_names": names,
         "assets": resolved,
