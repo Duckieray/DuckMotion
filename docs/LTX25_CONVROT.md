@@ -1,95 +1,159 @@
-# LTX-2.5 INT8 ConvRot / REDGraft
+# LTX-2.5 INT8 ConvRot
 
-Status: **implementation and contract tests available; real-model GPU smoke validation pending**
+Status: **format/runtime/profile contracts available; real-model GPU smoke validation pending**
 
-DuckMotion supports REDGraft-style LTX-2.5 INT8 ConvRot checkpoints as a private
-runtime variant. Users still select the checkpoint normally; there is no Comfy or
-backend selector in the product UI.
+DuckMotion treats LTX-2.5 INT8 ConvRot as a checkpoint **format**, not as a model
+brand or a sampling recipe. Users select the checkpoint normally; there is no
+ConvRot, Comfy, backend, or recipe selector in the product UI.
+
+## Separation of concerns
+
+DuckMotion keeps these contracts separate:
+
+```text
+Checkpoint descriptor
+  architecture: ltx25
+  source_format: int8_convrot
+
+Execution profile
+  profile id
+  worker entrypoint
+  required runtime nodes
+  required asset roles
+  defaults / constraints
+
+Display identity
+  arbitrary model/community name
+```
+
+A checkpoint being ConvRot does not automatically mean it should use one
+particular resolution, sigma schedule, asset set, or workflow. Those belong to
+the resolved execution profile.
+
+The current installed profile is:
+
+```text
+ltx25_convrot_two_stage_av
+```
+
+Its implementation was audited from a known REDGraft workflow. REDGraft is an
+important compatibility and hardware-test fixture for that profile, **not** a
+routing key. An unrelated ConvRot checkpoint may use the same profile if its
+companion recipe declares or structurally matches it.
 
 ## Runtime model
 
-The ConvRot worker uses a dedicated Python environment selected by:
+The ConvRot runtime uses its dedicated interpreter under the normal deterministic
+runtime root:
+
+```text
+~/.local/share/duckmotion/runtimes/ltx25_convrot/bin/python
+```
+
+Normal users do not need to export an interpreter path. The advanced override is:
 
 ```bash
 DUCKMOTION_LTX_CONVROT_PYTHON
 ```
 
-Prepare it with:
-
-```bash
-python tools/prepare_model_runtimes.py ltx25_convrot
-```
-
-The helper installs the ConvRot requirements, PyTorch/TorchAudio, and a detached
-Comfy core checkout pinned to:
+The runtime owns a detached Comfy core checkout pinned to:
 
 ```text
 9db05e0e1f035d1902ffc256fe7a336e549ced34
 ```
 
-The checkout lives beside the virtual environment under `ltx25_convrot/comfyui`
-unless `DUCKMOTION_LTX_CONVROT_COMFY_ROOT` overrides it.
+The checkout lives under `ltx25_convrot/comfyui` unless the advanced
+`DUCKMOTION_LTX_CONVROT_COMFY_ROOT` override is used.
 
 DuckMotion imports that checkout directly as a Python library. It does **not**:
 
 - start a ComfyUI server;
 - expose the Comfy web UI;
 - use the Comfy HTTP API;
-- execute the companion JSON as an arbitrary workflow.
+- execute a companion JSON as arbitrary code.
 
-Readiness initializes the same pinned builtin node registry used by the worker
-and verifies the required REDGraft node surface before any model load. This is in
-addition to Python/CUDA and asset checks.
+`tools/setup.py` repairs this runtime-owned checkout even when package
+reinstallation is skipped.
 
-## Required files
+## Recipe resolution
 
-A REDGraft checkpoint needs its companion JSON and these four support weights:
+A recognized ConvRot checkpoint is runnable only after its companion recipe maps
+to an installed execution profile.
 
-```text
-REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors
-redgraftLTX25Fast2K_ltx25RedgraftNSFW.json
+DuckMotion accepts two recipe inputs today.
 
-gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors
-ltx-2.3-spatial-upscaler-x2-1.1.safetensors
-ltx-2.5-video-vae-conv-bf16.safetensors
-ltx-2.5-audio-vae-bf16.safetensors
+### Native DuckMotion manifest
+
+A companion may explicitly name a profile and its asset roles:
+
+```json
+{
+  "checkpoint": "SomeCommunityLTX25ConvRot.safetensors",
+  "duckmotion_recipe": {
+    "profile": "ltx25_convrot_two_stage_av",
+    "assets": {
+      "text_encoder": {
+        "name": "encoder.safetensors",
+        "url": "https://huggingface.co/org/repo/resolve/main/encoder.safetensors"
+      },
+      "latent_upscaler": {
+        "name": "upscaler.safetensors"
+      },
+      "video_vae": {
+        "name": "video-vae.safetensors"
+      },
+      "audio_vae": {
+        "name": "audio-vae.safetensors"
+      }
+    }
+  }
+}
 ```
 
-They do not need to share one directory. DuckMotion searches the selected
-checkpoint directory and configured model roots recursively, so a normal layout
-is sufficient:
+The manifest does not contain executable code. Profile IDs must already be
+registered by DuckMotion.
+
+### Exported-workflow adapter
+
+For existing community bundles, DuckMotion can inspect an exported workflow as
+declarative evidence. It extracts node types and declared model records, then
+maps that evidence to a registered execution profile.
+
+The workflow itself is never executed. If zero profiles or multiple profiles
+match the evidence, DuckMotion refuses to guess.
+
+## Asset preparation
+
+`tools/prepare_model_assets.py` is provider-driven. Setup does not branch on
+REDGraft, ConvRot filenames, or other model brands.
+
+A provider normalizes a recipe into asset roles such as:
 
 ```text
-models/
-├── checkpoints/
-│   └── ltx/
-│       ├── REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors
-│       └── redgraftLTX25Fast2K_ltx25RedgraftNSFW.json
-├── text_encoders/
-│   └── gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors
-├── vae/
-│   ├── ltx-2.5-video-vae-conv-bf16.safetensors
-│   └── ltx-2.5-audio-vae-bf16.safetensors
-└── latent_upscale_models/
-    └── ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+text_encoder
+latent_upscaler
+video_vae
+audio_vae
 ```
 
-For conventional `models/checkpoints/...` layouts, readiness infers the shared
-`models/` root so sibling text-encoder/VAE/upscaler directories resolve even
-though backend readiness does not receive persisted config.
+DuckMotion first searches the checkpoint directory, inferred/configured shared
+model roots, and its own asset cache recursively. Assets do not need a Comfy-style
+folder layout.
 
-Readiness fails before model loading if the companion JSON is absent, does not
-declare one of the support weights, or a declared weight cannot be resolved.
+If a missing asset declares a trusted `https://huggingface.co/.../resolve/...`
+source, setup can fetch it through the model runtime's normal Hugging Face
+credentials. Gated repositories remain gated: DuckMotion does not accept terms
+or bypass authentication on the user's behalf.
 
-## Fixed REDGraft recipe
+A format can therefore be supported while an individual checkpoint remains
+blocked because its recipe is missing, ambiguous, unsupported, or points to
+unavailable assets. `doctor.py` reports that distinction before model loading.
 
-The companion JSON is evidence for the supported recipe, but the worker executes
-a fixed DuckMotion implementation.
+## Current two-stage AV profile
 
-The saved top-level REDGraft controls are:
+`ltx25_convrot_two_stage_av` currently owns these defaults:
 
 ```text
-duration:         10 seconds
 final resolution: 1152x768
 fps:              24
 frames:           241
@@ -97,24 +161,20 @@ CFG:              1.0
 sampler:          Euler
 ```
 
-The workflow computes latent length as `duration * fps + 1`, so the saved
-10-second / 24-fps setup produces `10 * 24 + 1 = 241` frames. Some nodes inside
-the grouped workflow retain stale local widget values such as 97 frames / 25 fps
-or 768x512 dimensions, but their inputs are linked to the top-level controls and
-those widget values are not the effective saved recipe.
+These are **profile defaults**, not ConvRot-format defaults. Checkpoint discovery
+therefore does not inject them merely because a file is INT8 ConvRot.
 
 Final dimensions are snapped to multiples of 64 and frame counts to `8k+1`.
-Stage one receives the linked width/height divided by two, so the saved 1152x768
-recipe starts at 576x384 before the learned spatial refinement path.
+Stage one runs at half final width/height.
 
 ### Conditioning
 
-The Gemma 4 12B ConvRot encoder produces positive conditioning. Negative
-conditioning is `ConditioningZeroOut(positive)`, followed by `LTXVConditioning`
-with the requested frame rate.
+The current profile uses positive LTX/Gemma conditioning and
+`ConditioningZeroOut(positive)` for the negative path, followed by
+`LTXVConditioning` at the requested frame rate.
 
-For I2V, the source image is first resized with Lanczos so its longer edge is
-1536 pixels, then processed with:
+For I2V, the source image is resized with Lanczos to a 1536-pixel longer edge and
+processed with:
 
 ```text
 LTXVPreprocess(img_compression=18)
@@ -124,9 +184,8 @@ The stage-one image guide strength is `0.7`.
 
 ### Stage one
 
-Video and audio latents are created separately. `LTXVEmptyLatentAudio` receives
-the loaded LTX-2.5 audio VAE. The two latents are concatenated with
-`LTXVConcatAVLatent` and sampled together.
+Video and audio latents are created separately and concatenated with
+`LTXVConcatAVLatent` before sampling.
 
 High-noise sigma schedule:
 
@@ -134,24 +193,20 @@ High-noise sigma schedule:
 1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0
 ```
 
-After sampling, `LTXVSeparateAVLatent` splits video and audio again.
+After sampling, `LTXVSeparateAVLatent` separates video and audio again.
 
 ### Upscale and stage two
 
-Before upscaling, `LTXVCropGuides` returns the conditioning and video latent that
-must feed stage two. The video latent then follows this exact chain:
+The current profile applies:
 
 ```text
-LTXVLatentUpsampler
+LTXVCropGuides
+  -> LTXVLatentUpsampler
   -> LatentUpscaleBy(upscale_method="bicubic", scale_by=0.5)
   -> LTXVImgToVideoInplace(strength=1.0)  # I2V only
 ```
 
-The learned LTX 2.3 upsampler plus the 0.5 bicubic resize reproduces the net 2x
-spatial refinement path in the saved REDGraft graph.
-
-The upscaled video latent is recombined with the audio latent and sampled with
-the cropped guide conditioning.
+The upscaled video latent is recombined with audio for the second pass.
 
 Low-noise sigma schedule:
 
@@ -159,15 +214,12 @@ Low-noise sigma schedule:
 0.85, 0.7250, 0.4219, 0.0
 ```
 
-The saved workflow has separate randomized `RandomNoise` nodes for stages one and
-two. DuckMotion keeps its normal single-seed public API and deterministically
-uses `seed + 1` modulo uint64 for the second stage. This preserves reproducibility
-while keeping the two REDGraft noise streams distinct.
+DuckMotion's single public seed deterministically derives the second noise stream
+as `seed + 1` modulo uint64.
 
 ### Decode and output
 
-The final AV latent is separated. Video is decoded with the saved tiled VAE
-settings:
+The final video latent is tiled-decoded with:
 
 ```text
 VAEDecodeTiled(
@@ -178,37 +230,47 @@ VAEDecodeTiled(
 )
 ```
 
-Audio is decoded through `LTXVAudioVAEDecode` with the LTX-2.5 audio VAE.
+Audio is decoded through `LTXVAudioVAEDecode`. The worker writes H.264 MP4 with
+CRF 16 through pinned Comfy core `CreateVideo` + `SaveVideo`.
 
-The reference graph uses VideoHelperSuite for H.264 MP4, yuv420p, CRF 16. The
-DuckMotion worker uses pinned Comfy core `CreateVideo` + `SaveVideo` instead so
-no custom output-node package is required. Core Comfy's 8-bit H.264 encoder uses
-yuv420p, and DuckMotion explicitly sets CRF 16.
+## Extending ConvRot
 
-## Why both VAEs use `VAELoader`
+A future ConvRot recipe should normally require **no new backend and no new UI
+mode**.
 
-The pinned REDGraft graph loads both the video and audio VAE through Comfy core
-`VAELoader`. DuckMotion does the same. `LTXVAudioVAELoader` searches the
-checkpoint category and is not the loader contract used by this recipe.
+Add an `ExecutionProfile` that declares:
+
+- compatible architecture + source format;
+- worker entrypoint;
+- structural evidence used by workflow adapters;
+- required runtime nodes;
+- required asset roles;
+- profile defaults/constraints.
+
+If its asset shape needs different interpretation, extend/register an asset
+provider. Generic setup continues to call only `prepare_model_assets.py`.
+
+If two profiles match the same structural evidence, the registry deliberately
+returns no profile rather than choosing one arbitrarily.
 
 ## Validation
 
-Unit/contract coverage lives in `tests/test_ltx_convrot.py` and protects:
+Unit/contract coverage protects:
 
-- exact high/low sigma schedules;
-- guide/preprocess/upscale/decode/output constants;
-- independent reproducible stage-one/stage-two noise streams;
-- classic Comfy `FUNCTION` and modern class/instance `execute` invocation;
-- required pinned-Comfy node readiness;
-- asset discovery across a normal model-root layout;
-- private ConvRot routing and public architecture-free model payloads;
-- the critical REDGraft AV and stage-two operation ordering.
+- profile-owned defaults and runtime-node requirements;
+- checkpoint format detection independent of recipe selection;
+- explicit DuckMotion manifests;
+- exported-workflow adaptation;
+- generic asset-provider iteration;
+- arbitrary shared-model layouts;
+- no brand-specific recipe table;
+- ambiguous profile evidence refusing to guess;
+- the current two-stage AV operation ordering and constants.
 
-`tools/run_hardware_smoke.py` adds dedicated ConvRot T2V/I2V canaries and a
-heavier saved-default row. It intentionally keeps ConvRot distinct from the
-standard Diffusers LTX target.
+`tools/run_hardware_smoke.py` identifies ConvRot models using readiness
+`source_format` metadata, not model names, and obtains heavy/default dimensions
+from the resolved profile.
 
-A passing test suite is **not** a hardware validation. Before declaring the
-runtime production-ready on a specific GPU, run a real T2V and I2V generation
-with the actual REDGraft/support weights and confirm synchronized audio/video,
-output dimensions, frame count, memory behavior, and successful teardown.
+A passing test suite is **not** hardware validation. Real T2V/I2V generation still
+has to pass on target hardware with an actual checkpoint, resolved recipe/assets,
+synchronized audio/video, successful teardown, and acceptable memory behavior.
