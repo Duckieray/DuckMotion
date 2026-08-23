@@ -203,6 +203,7 @@ def prepare_checkpoint_provenance(checkpoint: str | Path) -> dict[str, Any]:
         for raw in match.get("recipe_paths") or []
         if str(raw).strip()
     ]
+    diagnostics = match.get("diagnostics") if isinstance(match.get("diagnostics"), dict) else {}
     record = {
         "provider": match.get("provider"),
         "source_id": match.get("source_id"),
@@ -215,6 +216,7 @@ def prepare_checkpoint_provenance(checkpoint: str | Path) -> dict[str, Any]:
         "ctime_ns": fingerprint["ctime_ns"],
         "recipe_paths": recipe_paths,
         "metadata_path": match.get("metadata_path"),
+        "diagnostics": diagnostics,
     }
     index = _load_index()
     index["records"][_path_key(path)] = record
