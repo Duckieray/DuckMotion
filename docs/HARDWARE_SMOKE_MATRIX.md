@@ -120,8 +120,8 @@ selections.
 | 3 | Wan2.2 I2V A14B BF16 | I2V | 512x320, 17 frames | only if 16 GB path is viable |
 | 4 | LTX-2.5 Diffusers | T2V + audio | 768x512, 33 frames | 1536x1024, 121 frames |
 | 5 | LTX-2.5 Diffusers | I2V + audio | same canary with source image | reference-size only after T2V passes |
-| 6 | REDGraft LTX-2.5 ConvRot | T2V + audio | 768x512, 33 frames | DuckMotion default 1152x768, 241 frames |
-| 7 | REDGraft LTX-2.5 ConvRot | I2V + audio | same canary with source image | default-size only after T2V passes |
+| 6 | REDGraft LTX-2.5 ConvRot | T2V + audio | 768x512, 33 frames | saved recipe 1152x768, 241 frames |
+| 7 | REDGraft LTX-2.5 ConvRot | I2V + audio | same canary with source image | saved-recipe size only after T2V passes |
 
 Canary dimensions still obey model constraints: Wan uses dimensions divisible by
 16 and `4k+1` frames; both LTX runtimes use final dimensions divisible by 64 and
@@ -130,10 +130,11 @@ canaries. ConvRot keeps its fixed REDGraft high/low sigma schedules, Euler, CFG
 1, AV latent path, guide cropping, and latent-upscale chain; canaries only reduce
 resolution/frame count.
 
-The ConvRot `241` frame value above is DuckMotion's current model default. It is
-not being presented as a frame-count value proven from the supplied companion
-JSON; the supplied graph contains internal/group-local widget values that are
-not reliable top-level defaults.
+The REDGraft top-level workflow controls store duration `10`, width `1152`,
+height `768`, and frame rate `24`. Its linked length expression is
+`duration * frame_rate + 1`, so the reference gate is `10 * 24 + 1 = 241`
+frames. Group-local 97-frame / 25-fps widget values are overridden by these
+linked top-level controls and are not the effective saved recipe.
 
 ## 4. API-driven runner
 
@@ -156,7 +157,7 @@ python tools/run_hardware_smoke.py \
   --only ltx25-convrot-i2v-canary
 ```
 
-After both canaries pass, opt into the heavier DuckMotion-default row:
+After both canaries pass, opt into the heavier saved-recipe row:
 
 ```bash
 python tools/run_hardware_smoke.py \
