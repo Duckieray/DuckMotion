@@ -15,6 +15,10 @@ from ltx_convrot_worker import (
     LATENT_UPSCALE_SCALE,
     LOW_SIGMAS,
     UPSCALED_IMAGE_GUIDE_STRENGTH,
+    VIDEO_DECODE_OVERLAP,
+    VIDEO_DECODE_TEMPORAL_OVERLAP,
+    VIDEO_DECODE_TEMPORAL_SIZE,
+    VIDEO_DECODE_TILE_SIZE,
     _call_node,
     _snap_dimension,
     _snap_frames,
@@ -31,32 +35,45 @@ def test_redgraft_recipe_constants_are_locked():
     assert IMAGE_PREPROCESS_COMPRESSION == 18
     assert LATENT_UPSCALE_METHOD == "bicubic"
     assert LATENT_UPSCALE_SCALE == 0.5
+    assert VIDEO_DECODE_TILE_SIZE == 480
+    assert VIDEO_DECODE_OVERLAP == 96
+    assert VIDEO_DECODE_TEMPORAL_SIZE == 96
+    assert VIDEO_DECODE_TEMPORAL_OVERLAP == 24
     assert _snap_dimension(1152) == 1152
     assert _snap_dimension(768) == 768
     assert _snap_frames(10 * 24 + 1) == 241
 
 
-def test_call_node_supports_classic_function_and_modern_execute_contracts():
+def test_call_node_supports_classic_and_modern_execute_contracts():
     class ClassicNode:
         FUNCTION = "run"
 
         def run(self, value):
             return (value + 1,)
 
-    class ModernNode:
+    class ClassModernNode:
         @classmethod
         def execute(cls, value):
             return (value * 2,)
 
+    class InstanceModernNode:
+        def execute(self, value):
+            return (value * 3,)
+
     nodes = SimpleNamespace(
-        NODE_CLASS_MAPPINGS={"Classic": ClassicNode, "Modern": ModernNode}
+        NODE_CLASS_MAPPINGS={
+            "Classic": ClassicNode,
+            "ClassModern": ClassModernNode,
+            "InstanceModern": InstanceModernNode,
+        }
     )
 
     assert _call_node(nodes, "Classic", value=2, ignored="filtered") == (3,)
-    assert _call_node(nodes, "Modern", value=3, ignored="filtered") == (6,)
+    assert _call_node(nodes, "ClassModern", value=3, ignored="filtered") == (6,)
+    assert _call_node(nodes, "InstanceModern", value=4, ignored="filtered") == (12,)
 
 
-def test_worker_source_keeps_redgraft_av_and_second_stage_order():
+def test_worker_source_keeps_redgraft_av_second_stage_and_decoder_order():
     import ltx_convrot_worker
 
     source = inspect.getsource(ltx_convrot_worker._run)
@@ -69,6 +86,12 @@ def test_worker_source_keeps_redgraft_av_and_second_stage_order():
     assert "positive=stage2_positive" in source
     assert "negative=stage2_negative" in source
     assert "strength=UPSCALED_IMAGE_GUIDE_STRENGTH" in source
+    assert source.index('"LTXVSeparateAVLatent", av_latent=stage2') < source.index('"VAEDecodeTiled"')
+    assert "tile_size=VIDEO_DECODE_TILE_SIZE" in source
+    assert "overlap=VIDEO_DECODE_OVERLAP" in source
+    assert "temporal_size=VIDEO_DECODE_TEMPORAL_SIZE" in source
+    assert "temporal_overlap=VIDEO_DECODE_TEMPORAL_OVERLAP" in source
+    assert 'video_vae.decode(video_latent["samples"])' not in source
 
 
 def test_companion_recipe_resolves_all_required_assets_from_standard_model_root(tmp_path: Path):
