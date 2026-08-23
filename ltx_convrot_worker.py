@@ -1,9 +1,9 @@
-"""Standalone LTX-2.5 INT8 ConvRot worker.
+"""Worker for DuckMotion's LTX-2.5 ConvRot two-stage AV execution profile.
 
 This worker imports a pinned Comfy core checkout as a Python library. It does not
 start ComfyUI, expose a workflow API, or execute the checkpoint's companion JSON
-as arbitrary code. The JSON is used only to resolve the required model assets;
-execution below is DuckMotion's fixed two-stage REDGraft LTX recipe.
+as arbitrary code. Recipe resolution happens before worker dispatch; this module
+implements only the registered ``ltx25_convrot_two_stage_av`` profile.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import sys
 import traceback
 
 
+EXECUTION_PROFILE_ID = "ltx25_convrot_two_stage_av"
 HIGH_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
 LOW_SIGMAS = "0.85, 0.7250, 0.4219, 0.0"
 IMAGE_GUIDE_STRENGTH = 0.7
@@ -44,7 +45,7 @@ def _snap_frames(value: int) -> int:
 
 
 def _stage2_seed(seed: int) -> int:
-    """Derive the independent second REDGraft noise stream reproducibly."""
+    """Derive the profile's independent second noise stream reproducibly."""
 
     return (int(seed) + 1) & UINT64_MASK
 
@@ -155,6 +156,13 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
 def _run(request: dict, output_dir: Path) -> dict:
     import torch
 
+    profile_id = str(request.get("execution_profile") or "").strip()
+    if profile_id != EXECUTION_PROFILE_ID:
+        raise RuntimeError(
+            f"Worker implements execution profile '{EXECUTION_PROFILE_ID}', "
+            f"not {profile_id or '<missing>'!r}"
+        )
+
     if not torch.cuda.is_available():
         raise RuntimeError("LTX ConvRot runtime currently requires CUDA")
 
@@ -191,8 +199,8 @@ def _run(request: dict, output_dir: Path) -> dict:
         device="default",
     )[0]
     video_vae = _call_node(nodes, "VAELoader", vae_name=Path(assets["video_vae"]).name)[0]
-    # REDGraft loads both LTX VAEs through core VAELoader. The LTX audio-only
-    # loader searches the checkpoint category instead and does not match this recipe.
+    # The two-stage AV profile loads both LTX VAEs through core VAELoader. The
+    # audio-only loader searches a different category and is not this profile's contract.
     audio_vae = _call_node(nodes, "VAELoader", vae_name=Path(assets["audio_vae"]).name)[0]
     latent_upscaler = _call_node(
         nodes,
@@ -201,8 +209,8 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
 
     positive = _call_node(nodes, "CLIPTextEncode", clip=clip, text=prompt)[0]
-    # The reference graph zeroes the positive conditioning rather than encoding
-    # an empty negative prompt. This preserves the exact LTX conditioning shape.
+    # This profile zeroes positive conditioning rather than encoding an empty
+    # negative prompt, preserving the expected LTX conditioning shape.
     negative = _call_node(nodes, "ConditioningZeroOut", conditioning=positive)[0]
     positive, negative = _call_node(
         nodes,
@@ -278,9 +286,9 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
     video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage1)[:2]
 
-    # REDGraft crops guide frames/conditioning before the second pass. For T2V
-    # this is effectively a no-op; for I2V it removes stage-one guide frames so
-    # the high-resolution guide can be reapplied after latent upscaling.
+    # Crop guide frames/conditioning before the second pass. For T2V this is
+    # effectively a no-op; for I2V it removes stage-one guide frames so the
+    # high-resolution guide can be reapplied after latent upscaling.
     stage2_positive, stage2_negative, video_latent = _call_node(
         nodes,
         "LTXVCropGuides",
@@ -339,9 +347,8 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
     video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage2)[:2]
 
-    # The saved REDGraft decoder uses tiled video VAE decoding with explicit
-    # spatial/temporal tile sizes. Keeping those values avoids a large full-latent
-    # decode allocation and reproduces the graph's final decode behavior.
+    # The profile uses tiled video VAE decoding with explicit spatial/temporal
+    # tile sizes to avoid a large full-latent decode allocation.
     images = _call_node(
         nodes,
         "VAEDecodeTiled",
@@ -368,9 +375,8 @@ def _run(request: dict, output_dir: Path) -> dict:
         bit_depth=8,
         color_space="sRGB",
     )[0]
-    # The reference workflow uses VideoHelperSuite for H.264/yuv420p/CRF16.
-    # Pinned Comfy core SaveVideo produces yuv420p for 8-bit H.264, so no custom
-    # output node is needed to preserve those encode settings.
+    # Pinned Comfy core SaveVideo provides the profile's H.264/yuv420p output;
+    # no custom output-node package is required.
     _call_node(
         nodes,
         "SaveVideo",
@@ -401,7 +407,8 @@ def _run(request: dict, output_dir: Path) -> dict:
         "seed": seed,
         "stage2_seed": stage2_seed,
         "audio": True,
-        "sampling": "redgraft_convrot_two_stage",
+        "execution_profile": EXECUTION_PROFILE_ID,
+        "sampling": "ltx25_convrot_two_stage_av",
         "high_sigmas": HIGH_SIGMAS,
         "low_sigmas": LOW_SIGMAS,
         "image_guide_strength": IMAGE_GUIDE_STRENGTH if input_image else None,
@@ -418,6 +425,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "runtime": {
             "device": "cuda",
             "source_format": "int8_convrot",
+            "execution_profile": EXECUTION_PROFILE_ID,
             "gpu_name": torch.cuda.get_device_name(0),
             "total_vram_gb": round(total_vram_gb, 2),
         },
@@ -431,6 +439,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "seed": seed,
         "frame_count": num_frames,
         "fps": fps,
+        "execution_profile": EXECUTION_PROFILE_ID,
     }
 
 
