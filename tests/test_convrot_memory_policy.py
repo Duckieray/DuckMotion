@@ -74,3 +74,34 @@ def test_required_dynamic_policy_fails_closed_if_activation_is_missing():
     source = inspect.getsource(ltx_convrot_runtime_worker._prepare_comfy)
     assert 'if policy["dynamic_vram"] and not dynamic_vram_active:' in source
     assert "requires Comfy DynamicVRAM" in source
+
+
+def test_embedded_comfy_node_dispatch_runs_inside_inference_mode(monkeypatch):
+    import torch
+
+    observed = []
+
+    def fake_call_node(nodes_module, node_name: str, **kwargs):
+        observed.append(torch.is_inference_mode_enabled())
+        return (node_name, kwargs.get("value"))
+
+    monkeypatch.setattr(
+        ltx_convrot_runtime_worker.recipe_worker,
+        "_call_node",
+        fake_call_node,
+    )
+
+    ltx_convrot_runtime_worker._install_inference_node_dispatch()
+    result = ltx_convrot_runtime_worker.recipe_worker._call_node(
+        object(),
+        "ExampleNode",
+        value=7,
+    )
+
+    assert result == ("ExampleNode", 7)
+    assert observed == [True]
+
+
+def test_inference_node_dispatch_is_installed_by_runtime_main():
+    source = inspect.getsource(ltx_convrot_runtime_worker.main)
+    assert "_install_inference_node_dispatch()" in source
