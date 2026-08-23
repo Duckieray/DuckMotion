@@ -46,14 +46,32 @@ def resolve_runtime_python(runtime: str) -> str:
     return str(default_runtime_python(runtime))
 
 
+def configure_default_runtime_env() -> dict[str, str]:
+    """Populate backend env vars only when the user has not overridden them.
+
+    Existing backend modules already use these variables as advanced overrides.
+    Setting deterministic defaults once at plugin startup keeps that contract
+    while removing environment-variable setup from the normal installation path.
+    """
+    configured: dict[str, str] = {}
+    for runtime, env_var in RUNTIME_ENV_VARS.items():
+        current = str(os.getenv(env_var) or "").strip()
+        value = current or str(default_runtime_python(runtime))
+        if not current:
+            os.environ[env_var] = value
+        configured[env_var] = value
+    return configured
+
+
 def runtime_status(runtime: str) -> dict[str, object]:
     env_var = RUNTIME_ENV_VARS[runtime]
     override = str(os.getenv(env_var) or "").strip()
     path = Path(resolve_runtime_python(runtime)).expanduser()
+    default_path = default_runtime_python(runtime)
     return {
         "runtime": runtime,
         "python": str(path),
         "exists": path.exists() and path.is_file(),
-        "source": "environment" if override else "default",
+        "source": "environment" if override and path != default_path else "default",
         "override_env": env_var,
     }
