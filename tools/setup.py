@@ -5,9 +5,11 @@ Examples:
     python tools/setup.py --models /path/to/models
     python tools/setup.py --models /path/to/models --webbduck-dir ../WebbDuck
 
-The command prepares all isolated runtimes, persists the shared model root, and
-installs/refreshes the WebbDuck plugin when a WebbDuck checkout is available.
-Environment variables are not required for the normal path.
+The command prepares isolated runtimes, repairs runtime-owned adjuncts, persists
+the shared model root, prepares support assets for discovered models, and
+installs/refreshes the WebbDuck plugin when a checkout is available.
+Environment variables and special model folder layouts are not required for the
+normal path.
 """
 
 from __future__ import annotations
@@ -63,6 +65,11 @@ def _run(args: list[str]) -> None:
     subprocess.check_call(args)
 
 
+def _run_nonfatal(args: list[str]) -> int:
+    print("+", " ".join(args))
+    return subprocess.run(args, check=False).returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare DuckMotion for normal local use.")
     parser.add_argument(
@@ -83,7 +90,12 @@ def main() -> int:
     parser.add_argument(
         "--skip-runtimes",
         action="store_true",
-        help="Keep existing runtimes instead of preparing/updating them.",
+        help="Keep installed runtime packages; runtime-owned adjuncts are still repaired.",
+    )
+    parser.add_argument(
+        "--skip-model-assets",
+        action="store_true",
+        help="Do not prepare support assets for discovered models.",
     )
     parser.add_argument(
         "--skip-plugin-install",
@@ -100,14 +112,37 @@ def main() -> int:
     _save_models_dir(models_dir)
     print(f"Saved DuckMotion config: {CONFIG_FILE}")
 
-    if not args.skip_runtimes:
+    runtime_tool = str(ROOT / "tools" / "prepare_model_runtimes.py")
+    if args.skip_runtimes:
+        # Skipping package installation must not leave runtime-owned resources
+        # (notably the pinned ConvRot Comfy checkout) half-created.
         _run(
             [
                 args.python,
-                str(ROOT / "tools" / "prepare_model_runtimes.py"),
+                runtime_tool,
+                "all",
+                "--repair-only",
+            ]
+        )
+    else:
+        _run(
+            [
+                args.python,
+                runtime_tool,
                 "all",
                 "--python",
                 args.python,
+            ]
+        )
+
+    asset_status = 0
+    if not args.skip_model_assets:
+        asset_status = _run_nonfatal(
+            [
+                args.python,
+                str(ROOT / "tools" / "prepare_convrot_assets.py"),
+                "--models",
+                str(models_dir),
             ]
         )
 
@@ -128,7 +163,12 @@ def main() -> int:
             )
 
     print("")
-    print("Setup complete. No DUCKMOTION_*_PYTHON exports are required.")
+    if asset_status:
+        print("Setup completed with one or more model-asset access blockers.")
+        print("No manual folder arrangement is required; resolve the reported Hugging Face access issue and rerun setup.")
+    else:
+        print("Setup complete.")
+    print("No DUCKMOTION_*_PYTHON exports are required.")
     print("Next: python tools/doctor.py")
     return 0
 
