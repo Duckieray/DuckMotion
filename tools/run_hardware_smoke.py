@@ -99,6 +99,7 @@ def _find_model(
     any_patterns: tuple[str, ...] = (),
     excluded: tuple[str, ...] = (),
     require_audio: bool | None = None,
+    source_format: str | None = None,
 ) -> dict | None:
     if explicit:
         target = explicit.lower()
@@ -110,6 +111,7 @@ def _find_model(
     for item in items:
         text = _item_text(item)
         capabilities = dict(item.get("capabilities") or {})
+        runtime = dict(item.get("runtime") or {})
         if any(pattern in text for pattern in excluded):
             continue
         if patterns and not all(pattern in text for pattern in patterns):
@@ -117,6 +119,8 @@ def _find_model(
         if any_patterns and not any(pattern in text for pattern in any_patterns):
             continue
         if require_audio is not None and bool(capabilities.get("audio_output")) != require_audio:
+            continue
+        if source_format is not None and str(runtime.get("source_format") or "").lower() != source_format.lower():
             continue
         return item
     return None
@@ -136,6 +140,8 @@ def _runtime_summary(item: dict | None) -> dict:
         "gpu_name": runtime.get("gpu_name"),
         "compute_capability": runtime.get("compute_capability"),
         "vram_gb": runtime.get("vram_gb"),
+        "source_format": runtime.get("source_format"),
+        "execution_profile": runtime.get("execution_profile"),
         "weights": item.get("weights"),
     }
 
@@ -181,30 +187,31 @@ def _submit(api_base: str, payload: dict, timeout: float) -> tuple[dict, float]:
 def _rows(args, items: list[dict], image_path: str | None) -> list[dict]:
     wan5 = _find_model(items, args.wan_5b_model, ("wan2.2", "ti2v", "5b"))
     wan_i2v = _find_model(items, args.wan_i2v_model, ("wan2.2", "i2v", "a14b"))
+
+    ltx_convrot = _find_model(
+        items,
+        getattr(args, "ltx_convrot_model", None),
+        require_audio=True,
+        source_format="int8_convrot",
+    )
+
     ltx = _find_model(
         items,
         args.ltx_model,
         any_patterns=("ltx-2.5", "ltx2.5", "ltx25"),
-        excluded=("convrot", "redgraft"),
+        excluded=(".safetensors",),
         require_audio=True,
     )
     if ltx is None and not args.ltx_model:
-        # Public descriptors intentionally hide architecture/backend IDs. Audio
-        # output is currently unique to LTX among installed video runtimes, so
-        # this is a robust fallback for cached LTX snapshots whose display name
-        # does not preserve the canonical repo spelling.
+        # Public descriptors hide architecture/backend IDs. Audio output is
+        # currently unique to LTX among installed video runtimes; excluding
+        # single-file checkpoints keeps the standard Diffusers target distinct.
         ltx = _find_model(
             items,
             None,
-            excluded=("convrot", "redgraft", ".safetensors"),
+            excluded=(".safetensors",),
             require_audio=True,
         )
-    ltx_convrot = _find_model(
-        items,
-        getattr(args, "ltx_convrot_model", None),
-        any_patterns=("convrot", "redgraft"),
-        require_audio=True,
-    )
 
     def row(name, model, payload, *, heavy=False, optional=False):
         return {"row": name, "model": model, "payload": payload, "heavy": heavy, "optional": optional}
@@ -235,11 +242,24 @@ def _rows(args, items: list[dict], image_path: str | None) -> list[dict]:
         ]
     )
 
+    profile_defaults = dict(((ltx_convrot or {}).get("runtime") or {}).get("profile_defaults") or {})
     rows.extend(
         [
             row("ltx25-convrot-t2v-canary", ltx_convrot, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
             row("ltx25-convrot-i2v-canary", ltx_convrot, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
-            row("ltx25-convrot-default", ltx_convrot, {"prompt": PROMPT, "width": 1152, "height": 768, "num_frames": 241, "fps": 24, "seed": 0}, heavy=True),
+            row(
+                "ltx25-convrot-default",
+                ltx_convrot,
+                {
+                    "prompt": PROMPT,
+                    "width": int(profile_defaults.get("width") or 1152),
+                    "height": int(profile_defaults.get("height") or 768),
+                    "num_frames": int(profile_defaults.get("num_frames") or 241),
+                    "fps": int(profile_defaults.get("fps") or 24),
+                    "seed": 0,
+                },
+                heavy=True,
+            ),
         ]
     )
     return rows
@@ -254,7 +274,7 @@ def main() -> int:
     parser.add_argument("--wan-5b-model", help="Override the auto-detected Wan2.2 TI2V-5B public model identity.")
     parser.add_argument("--wan-i2v-model", help="Override the auto-detected Wan2.2 I2V A14B public model identity.")
     parser.add_argument("--ltx-model", help="Override the auto-detected standard LTX-2.5 public model identity.")
-    parser.add_argument("--ltx-convrot-model", help="Override the auto-detected LTX-2.5 ConvRot/REDGraft public model identity.")
+    parser.add_argument("--ltx-convrot-model", help="Override the auto-detected LTX-2.5 ConvRot public model identity.")
     parser.add_argument("--timeout", type=float, default=14400.0)
     parser.add_argument("--report-dir", type=Path, default=Path("smoke_reports"))
     args = parser.parse_args()
@@ -276,7 +296,13 @@ def main() -> int:
         "execute": args.execute,
         "include_heavy": args.include_heavy,
         "available_models": [
-            {"name": item.get("name"), "source": item.get("source"), "ready": bool(item.get("ready"))}
+            {
+                "name": item.get("name"),
+                "source": item.get("source"),
+                "ready": bool(item.get("ready")),
+                "source_format": (item.get("runtime") or {}).get("source_format"),
+                "execution_profile": (item.get("runtime") or {}).get("execution_profile"),
+            }
             for item in items
         ],
         "rows": [],

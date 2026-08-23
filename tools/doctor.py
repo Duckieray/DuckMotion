@@ -107,6 +107,20 @@ def main() -> int:
         if ready:
             ready_count += 1
         print(f"  {_mark(ready)} {name}: {_short_reason(readiness)}")
+
+        source_format = str(readiness.get("source_format") or "").strip()
+        profile = str(readiness.get("execution_profile") or "").strip()
+        if source_format:
+            print(f"      format: {source_format}")
+        if profile:
+            print(f"      recipe: {profile}")
+        elif source_format and not ready:
+            assets = readiness.get("assets") if isinstance(readiness.get("assets"), dict) else {}
+            if assets.get("config_path"):
+                print("      recipe: unresolved/unsupported")
+            else:
+                print("      recipe: not resolved")
+
         assets = readiness.get("assets") if isinstance(readiness.get("assets"), dict) else None
         if assets and not assets.get("ready"):
             for missing in assets.get("missing") or []:

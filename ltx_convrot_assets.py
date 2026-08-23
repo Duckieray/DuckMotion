@@ -1,8 +1,13 @@
-"""Asset/config discovery for LTX-2.5 INT8 ConvRot checkpoints.
+"""Recipe and asset discovery for LTX-2.5 INT8 ConvRot checkpoints.
 
-ConvRot is an internal checkpoint format. Public model payloads continue to expose
-only model identity and capabilities; this module is used by discovery/readiness and
-the isolated worker to locate the model's companion recipe and support weights.
+Checkpoint identity, execution recipe, and product/display names are deliberately
+separate. This module detects the checkpoint format, resolves a compatible
+execution profile through DuckMotion's generic recipe registry, and resolves the
+assets declared by the companion recipe.
+
+A companion may use DuckMotion's small declarative ``duckmotion_recipe`` schema
+or be an exported workflow that an adapter can map to a supported profile.
+DuckMotion never executes arbitrary companion/workflow code.
 """
 
 from __future__ import annotations
@@ -10,10 +15,20 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
+
+from model_recipes import (
+    LTX25_CONVROT_TWO_STAGE_AV,
+    execution_profiles,
+    profile_from_explicit_manifest,
+)
 
 
-ASSET_KINDS = ("text_encoder", "latent_upscaler", "video_vae", "audio_vae")
+ARCHITECTURE = "ltx25"
+SOURCE_FORMAT = "int8_convrot"
+SUPPORTED_EXECUTION_PROFILE = LTX25_CONVROT_TWO_STAGE_AV.profile_id
+PROFILE_REQUIRED_NODES = set(LTX25_CONVROT_TWO_STAGE_AV.evidence_node_types)
+ASSET_KINDS = tuple(LTX25_CONVROT_TWO_STAGE_AV.required_assets)
 MODEL_CATEGORY_DIRS = {
     "checkpoints",
     "checkpoint",
@@ -21,6 +36,15 @@ MODEL_CATEGORY_DIRS = {
     "diffusion-models",
     "unet",
 }
+
+
+def asset_cache_root() -> Path:
+    raw = str(os.getenv("DUCKMOTION_ASSET_CACHE") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".cache" / "duckmotion" / "assets"
+
+
+def convrot_asset_cache_root() -> Path:
+    return asset_cache_root() / "ltx25_convrot"
 
 
 def _safetensors_header_text(path: Path) -> str:
@@ -43,34 +67,25 @@ def _safetensors_header_text(path: Path) -> str:
         return str(payload).lower()
 
 
-def is_ltx25_convrot_path(value: str | Path) -> bool:
-    path = Path(value).expanduser()
-    if path.suffix.lower() != ".safetensors":
-        return False
-
-    name = path.name.lower()
-    ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
-    if ltx_name and ("convrot" in name or "redgraft" in name):
-        return True
-
-    if not path.exists() or not path.is_file():
-        return False
-    header = _safetensors_header_text(path)
-    return (
-        "convrot" in header
-        and any(marker in f"{name}\n{header}" for marker in ("ltx", "ltxv", "redgraft"))
-    )
-
-
 def _walk_strings(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
-    elif isinstance(value, dict):
+    elif isinstance(value, Mapping):
         for item in value.values():
             yield from _walk_strings(item)
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _walk_strings(item)
+
+
+def _walk_dicts(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _walk_dicts(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk_dicts(item)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -100,16 +115,131 @@ def find_companion_config(checkpoint: str | Path) -> Path | None:
         if any(checkpoint_name == Path(value).name.lower() for value in values):
             return candidate
 
-    # Civitai companion configs are often named for the recipe rather than the
-    # checkpoint. If there is exactly one JSON beside a ConvRot checkpoint it
-    # is still a useful deterministic candidate, but readiness validates that it
-    # actually describes all required assets before execution.
+    # Community bundles sometimes rename a checkpoint after exporting its recipe.
+    # A single sidecar is deterministic evidence, but profile validation below
+    # still has to prove that the recipe is supported.
     if len(candidates) == 1:
         return candidates[0]
     return None
 
 
-def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, str]:
+def _node_types(config: Mapping[str, Any]) -> set[str]:
+    types: set[str] = set()
+    for item in _walk_dicts(config):
+        value = item.get("type")
+        if isinstance(value, str):
+            types.add(value)
+    return types
+
+
+def execution_profile(config: Mapping[str, Any]) -> str | None:
+    """Resolve a supported profile from explicit manifest or structural evidence."""
+    explicit = profile_from_explicit_manifest(
+        config,
+        architecture=ARCHITECTURE,
+        source_format=SOURCE_FORMAT,
+    )
+    if explicit is not None:
+        return explicit.profile_id
+
+    inferred = execution_profiles.infer_from_node_types(
+        architecture=ARCHITECTURE,
+        source_format=SOURCE_FORMAT,
+        node_types=_node_types(config),
+    )
+    return inferred.profile_id if inferred is not None else None
+
+
+def is_ltx25_convrot_path(value: str | Path) -> bool:
+    """Best-effort format detection; profile selection happens separately.
+
+    Structural safetensors metadata and a compatible companion recipe are the
+    strongest signals. Filename hints are compatibility fallbacks for community
+    checkpoints that omit useful metadata. A brand token may be recognized as a
+    weak *format* hint for known legacy files, but it never chooses a profile,
+    asset set, or runtime behavior.
+    """
+    path = Path(value).expanduser()
+    if path.suffix.lower() != ".safetensors":
+        return False
+
+    if path.exists() and path.is_file():
+        header = _safetensors_header_text(path)
+        if "convrot" in header and any(marker in header for marker in ("ltx", "ltxv")):
+            return True
+
+        companion = find_companion_config(path)
+        if companion is not None:
+            config = read_json(companion)
+            if execution_profile(config):
+                return True
+
+    name = path.name.lower()
+    ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
+    if ltx_name and "convrot" in name:
+        return True
+
+    # Compatibility only for existing community artifacts whose filenames omit
+    # the format marker. This is deliberately not used anywhere in recipe or
+    # asset resolution.
+    return ltx_name and "redgraft" in name
+
+
+def _declared_models(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Extract declarative model records embedded by exported workflows."""
+    declarations: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in _walk_dicts(config):
+        models = item.get("models")
+        if not isinstance(models, list):
+            continue
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            name = str(model.get("name") or "").replace("\\", "/").strip()
+            url = str(model.get("url") or "").strip()
+            directory = str(model.get("directory") or "").replace("\\", "/").strip()
+            if not name:
+                continue
+            key = (Path(name).name.lower(), url)
+            if key in seen:
+                continue
+            seen.add(key)
+            declarations.append({"name": Path(name).name, "url": url, "directory": directory})
+    return declarations
+
+
+def _explicit_asset_manifest(config: Mapping[str, Any], profile_id: str) -> dict[str, dict[str, str]] | None:
+    recipe = config.get("duckmotion_recipe")
+    if not isinstance(recipe, Mapping):
+        return None
+    if str(recipe.get("profile") or "").strip() != profile_id:
+        return None
+    raw_assets = recipe.get("assets")
+    if not isinstance(raw_assets, Mapping):
+        return None
+
+    manifest: dict[str, dict[str, str]] = {}
+    for kind in ASSET_KINDS:
+        raw = raw_assets.get(kind)
+        if isinstance(raw, str):
+            manifest[kind] = {"name": Path(raw).name, "url": "", "directory": ""}
+        elif isinstance(raw, Mapping):
+            name = str(raw.get("name") or "").replace("\\", "/").strip()
+            manifest[kind] = {
+                "name": Path(name).name if name else "",
+                "url": str(raw.get("url") or "").strip(),
+                "directory": str(raw.get("directory") or "").replace("\\", "/").strip(),
+            }
+        else:
+            manifest[kind] = {"name": "", "url": "", "directory": ""}
+    return manifest
+
+
+def _workflow_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
+    """Adapt an exported LTX workflow into the supported profile's asset roles."""
+    declarations = _declared_models(config)
+    declared_by_name = {item["name"].lower(): item for item in declarations}
     strings = [value.replace("\\", "/") for value in _walk_strings(config)]
     safetensors = [Path(value).name for value in strings if value.lower().endswith(".safetensors")]
     checkpoint_lower = checkpoint_name.lower()
@@ -123,24 +253,40 @@ def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> di
                 return name
         return ""
 
-    return {
-        "text_encoder": first(lambda v: "gemma" in v and "ltx" in v and "convrot" in v),
+    names = {
+        "text_encoder": first(lambda v: "gemma" in v and "ltx" in v),
         "latent_upscaler": first(lambda v: "spatial-upscaler" in v or "latent-upscaler" in v),
         "video_vae": first(lambda v: "video-vae" in v),
         "audio_vae": first(lambda v: "audio-vae" in v),
     }
+    manifest: dict[str, dict[str, str]] = {}
+    for kind, name in names.items():
+        declaration = declared_by_name.get(name.lower(), {}) if name else {}
+        manifest[kind] = {
+            "name": name,
+            "url": str(declaration.get("url") or ""),
+            "directory": str(declaration.get("directory") or ""),
+        }
+    return manifest
+
+
+def extract_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
+    """Extract required asset roles from any companion accepted by this provider."""
+    profile_id = execution_profile(config)
+    if not profile_id:
+        return {kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS}
+    explicit = _explicit_asset_manifest(config, profile_id)
+    if explicit is not None:
+        return explicit
+    return _workflow_asset_manifest(config, checkpoint_name)
+
+
+def extract_asset_names(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, str]:
+    manifest = extract_asset_manifest(config, checkpoint_name)
+    return {kind: value.get("name", "") for kind, value in manifest.items()}
 
 
 def _inferred_model_root(checkpoint_path: Path) -> Path | None:
-    """Infer a shared model root from conventional checkpoint category paths.
-
-    A checkpoint such as ``models/checkpoints/ltx/model.safetensors`` must be
-    able to find sibling ``models/text_encoders`` / ``models/vae`` directories
-    during readiness, where the configured models_dir is not part of the backend
-    readiness interface. Only recognized model-category ancestors are used so we
-    do not accidentally recurse through an arbitrary filesystem parent.
-    """
-
     for ancestor in checkpoint_path.parent.parents:
         if ancestor.name.lower() in MODEL_CATEGORY_DIRS:
             return ancestor.parent
@@ -168,6 +314,9 @@ def candidate_search_roots(
             path = Path(raw).expanduser()
             if path not in roots:
                 roots.append(path)
+    cache = convrot_asset_cache_root()
+    if cache not in roots:
+        roots.append(cache)
     return roots
 
 
@@ -199,8 +348,14 @@ def inspect_convrot_assets(
     checkpoint_path = Path(checkpoint).expanduser()
     config_path = find_companion_config(checkpoint_path)
     config = read_json(config_path) if config_path else {}
-    names = extract_asset_names(config, checkpoint_path.name) if config else {kind: "" for kind in ASSET_KINDS}
+    profile_id = execution_profile(config) if config else None
+    profile = execution_profiles.get(profile_id)
+    manifest = extract_asset_manifest(config, checkpoint_path.name) if profile else {
+        kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS
+    }
+    names = {kind: manifest[kind].get("name", "") for kind in ASSET_KINDS}
     roots = candidate_search_roots(checkpoint_path, models_dir=models_dir)
+
     resolved: dict[str, str | None] = {}
     missing: list[str] = []
     for kind in ASSET_KINDS:
@@ -208,20 +363,28 @@ def inspect_convrot_assets(
         path = resolve_named_asset(name, roots) if name else None
         resolved[kind] = str(path) if path else None
         if not path:
-            missing.append(name or f"<{kind} not declared in companion config>")
+            missing.append(name or f"<{kind} not declared in companion recipe>")
 
     checkpoint_present = checkpoint_path.exists() and checkpoint_path.is_file()
     if not checkpoint_present:
         missing.insert(0, checkpoint_path.name or str(checkpoint_path))
     if config_path is None:
-        missing.insert(0, "<companion JSON config>")
+        missing.insert(0, "<companion recipe JSON>")
+    elif profile is None:
+        missing.insert(0, "<unsupported execution recipe>")
 
+    recipe = config.get("duckmotion_recipe") if isinstance(config, Mapping) else None
+    recipe_adapter = "duckmotion_manifest" if isinstance(recipe, Mapping) else ("workflow_adapter" if profile else None)
     return {
-        "ready": checkpoint_present and config_path is not None and not missing,
+        "ready": checkpoint_present and config_path is not None and profile is not None and not missing,
         "checkpoint": str(checkpoint_path),
         "config_path": str(config_path) if config_path else None,
+        "execution_profile": profile.profile_id if profile else None,
+        "recipe_adapter": recipe_adapter,
+        "asset_manifest": manifest,
         "asset_names": names,
         "assets": resolved,
         "missing": missing,
         "search_roots": [str(root) for root in roots],
+        "asset_cache": str(convrot_asset_cache_root()),
     }

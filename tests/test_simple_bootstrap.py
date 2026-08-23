@@ -58,13 +58,13 @@ def test_explicit_runtime_override_still_wins(monkeypatch, tmp_path):
     assert resolve_runtime_python("wan") == str(override)
 
 
-def test_redgraft_ltx_name_is_convrot_candidate_without_rename(tmp_path):
+def test_legacy_redgraft_filename_remains_a_format_hint_without_rename(tmp_path):
     checkpoint = tmp_path / "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors"
     assert is_ltx25_convrot_path(checkpoint) is True
 
 
-def test_redgraft_descriptor_routes_to_convrot_backend_without_rename(tmp_path):
-    checkpoint = tmp_path / "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors"
+def test_generic_convrot_filename_routes_without_brand_name(tmp_path):
+    checkpoint = tmp_path / "AcmeCinemaLTX25ConvRotQ8.safetensors"
     checkpoint.write_bytes(b"")
 
     descriptor = describe_video_model(str(checkpoint))
@@ -73,10 +73,11 @@ def test_redgraft_descriptor_routes_to_convrot_backend_without_rename(tmp_path):
     assert descriptor.backend == "ltx25_convrot"
     assert descriptor.detection["format"] == "int8_convrot"
     assert descriptor.detection["variant"] == "convrot"
-    assert descriptor.defaults["width"] == 1152
-    assert descriptor.defaults["height"] == 768
-    assert descriptor.defaults["num_frames"] == 241
     assert descriptor.constraints["checkpoint_recipe_required"] is True
+    # Recipe defaults are intentionally not injected by format detection.
+    assert descriptor.defaults["width"] == 1536
+    assert descriptor.defaults["height"] == 1024
+    assert descriptor.defaults["num_frames"] == 121
 
 
 def test_unrelated_ltx_safetensors_is_not_assumed_convrot(tmp_path):
@@ -84,26 +85,39 @@ def test_unrelated_ltx_safetensors_is_not_assumed_convrot(tmp_path):
     assert is_ltx25_convrot_path(checkpoint) is False
 
 
-def test_smoke_runner_auto_matches_standard_ltx_and_redgraft():
+def test_smoke_runner_matches_convrot_by_runtime_format_not_model_name():
     smoke = _load_smoke_module()
     standard = {
         "name": "Lightricks/LTX-2.5-Diffusers",
         "source": "Lightricks/LTX-2.5-Diffusers",
         "capabilities": {"audio_output": True},
+        "runtime": {},
     }
-    redgraft = {
-        "name": "redgraftLTX25Fast2K_ltx25RedgraftNSFW",
-        "source": "/models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
+    convrot = {
+        "name": "Completely Unbranded Community Checkpoint",
+        "source": "/models/community_checkpoint.safetensors",
         "capabilities": {"audio_output": True},
+        "runtime": {
+            "source_format": "int8_convrot",
+            "execution_profile": "ltx25_convrot_two_stage_av",
+            "profile_defaults": {
+                "width": 1152,
+                "height": 768,
+                "num_frames": 241,
+                "fps": 24,
+            },
+        },
     }
 
-    rows = smoke._rows(_smoke_args(), [standard, redgraft], "/tmp/source.png")
+    rows = smoke._rows(_smoke_args(), [standard, convrot], "/tmp/source.png")
     by_name = {row["row"]: row for row in rows}
 
     assert by_name["ltx25-t2v-canary"]["model"] is standard
     assert by_name["ltx25-i2v-canary"]["model"] is standard
-    assert by_name["ltx25-convrot-t2v-canary"]["model"] is redgraft
-    assert by_name["ltx25-convrot-i2v-canary"]["model"] is redgraft
+    assert by_name["ltx25-convrot-t2v-canary"]["model"] is convrot
+    assert by_name["ltx25-convrot-i2v-canary"]["model"] is convrot
+    assert by_name["ltx25-convrot-default"]["payload"]["width"] == 1152
+    assert by_name["ltx25-convrot-default"]["payload"]["num_frames"] == 241
 
 
 def test_smoke_runner_keeps_exact_row_names_when_model_missing():
@@ -131,6 +145,7 @@ def test_setup_and_doctor_are_first_class_commands():
     setup_source = setup.read_text(encoding="utf-8")
     doctor_source = doctor.read_text(encoding="utf-8")
     assert "prepare_model_runtimes.py" in setup_source
+    assert "prepare_model_assets.py" in setup_source
     assert "install_webbduck_plugin.py" in setup_source
     assert "discover_video_models" in doctor_source
     assert "backend_resolver.readiness" in doctor_source

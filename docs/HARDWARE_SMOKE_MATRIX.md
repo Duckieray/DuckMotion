@@ -7,32 +7,32 @@ model-driven; this document defines the first real Wan/LTX hardware validation.
 
 ## 1. Prepare DuckMotion
 
-Normal users should prepare runtimes and persist their shared model root with one
-command:
+Normal users prepare runtimes, persist their shared model root, repair runtime
+adjuncts, and prepare recipe-declared support assets with one command:
 
 ```bash
 python tools/setup.py --models /path/to/models
 ```
 
-The setup command creates the isolated Wan, standard LTX, and ConvRot runtimes at
-the deterministic `~/.local/share/duckmotion/runtimes/` location. DuckMotion
-finds those interpreters automatically; `DUCKMOTION_*_PYTHON` variables are
+DuckMotion uses deterministic runtime locations under
+`~/.local/share/duckmotion/runtimes/`; `DUCKMOTION_*_PYTHON` variables are
 advanced overrides only.
 
-For targeted runtime maintenance the lower-level command remains available:
+For targeted runtime maintenance:
 
 ```bash
 python tools/prepare_model_runtimes.py all
 ```
 
-Wan is pinned to Diffusers 0.39.0 and includes `gguf==0.19.0` so both normal
-Diffusers checkpoints and the restored hybrid Diffusers + GGUF path execute in
-the same isolated Wan runtime. Standard LTX-2.5 is pinned to the selected
-Diffusers-main commit because its APIs have not yet landed in a stable release.
-The ConvRot runtime owns a separate pinned Comfy core checkout and imports it as
-a Python library only; no ComfyUI server/UI/API is started.
+Wan is pinned to Diffusers 0.39.0 and includes `gguf==0.19.0`. Standard LTX-2.5
+uses the selected Diffusers-main commit. The ConvRot runtime owns a pinned Comfy
+core checkout and imports it as a Python library only; no ComfyUI server/UI/API
+is started.
 
-Runtime setup never downloads model weights.
+`prepare_model_runtimes.py` never downloads model weights. The higher-level
+`setup.py` may download **recipe-declared support assets** through registered
+asset providers when a trusted Hugging Face source URL is present; it never
+silently downloads the user's selected checkpoint.
 
 Before model loading, run:
 
@@ -41,19 +41,17 @@ python tools/doctor.py
 ```
 
 Doctor scans the configured model root plus the normal Hugging Face cache and
-performs the same non-loading runtime/asset gates used by DuckMotion. After
+performs the same non-loading runtime/recipe/asset gates used by DuckMotion. After
 starting WebbDuck, the equivalent live API surface is:
 
 ```text
 GET /runtime-readiness
 ```
 
-For each discovered target, `runtime.ready=true` means the worker interpreter
-can import the required runtime APIs and sees CUDA. GGUF models additionally
-probe `WanTransformer3DModel`, `GGUFQuantizationConfig`, and the `gguf` package.
-ConvRot readiness additionally requires the REDGraft companion JSON plus its
-text encoder, latent upscaler, video VAE, and audio VAE. This is an environment
-and asset gate, not a generation success claim.
+For each discovered target, `runtime.ready=true` means the worker interpreter can
+import the required runtime APIs and sees CUDA. GGUF models additionally probe
+the GGUF-specific Wan surface. ConvRot readiness additionally requires a
+compatible execution profile and all assets declared by that recipe.
 
 ## 2. Weight preparation
 
@@ -63,38 +61,28 @@ and asset gate, not a generation success claim.
 hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers
 ```
 
-This is the first plain-Diffusers Wan target. DuckMotion currently exposes its
-text-to-video path.
-
 ### Wan2.2 I2V A14B Diffusers — feasibility only
 
 ```bash
 hf download Wan-AI/Wan2.2-I2V-A14B-Diffusers
 ```
 
-This is very large and remains an explicit 16 GB feasibility test rather than a
-recommended production checkpoint.
+This remains an explicit 16 GB feasibility test rather than a recommended
+production checkpoint.
 
 ### Wan2.2 GGUF — regression target
 
-Keep the compatible high/low denoiser pair together in any local model root
-scanned by DuckMotion, for example:
+Keep a compatible high/low denoiser pair together anywhere in a scanned local
+model root, for example:
 
 ```text
-checkpoint/wan/Wan2.2-Enhanced-NSFW-I2V-T2V/
-├── Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_H.gguf
-└── Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_L.gguf
+checkpoint/wan/Wan2.2-Community/
+├── Wan2.2_Community_Q8_H.gguf
+└── Wan2.2_Community_Q8_L.gguf
 ```
 
-DuckMotion should discover that pair as **one model**. Selecting it persists the
-H-file source path; the Wan worker finds the L mate automatically and injects
-both transformers into the normal Diffusers Wan pipeline. Do not add a UI
-backend selector or separate GGUF configuration field.
-
-For T2V, the default component source is
-`Wan-AI/Wan2.2-T2V-A14B-Diffusers`; for I2V it is
-`Wan-AI/Wan2.2-I2V-A14B-Diffusers`. Those repos supply scheduler/VAE/text
-encoder/config components, while the local GGUF files replace the denoisers.
+DuckMotion discovers the pair as **one model**. Selecting it persists the H-file
+source path; the Wan worker finds the L mate automatically.
 
 ### LTX-2.5 distilled/two-stage
 
@@ -105,25 +93,26 @@ hf download Lightricks/LTX-2.5-Diffusers \
 
 The latent upsampler must remain present.
 
-### REDGraft LTX-2.5 INT8 ConvRot
+### LTX-2.5 INT8 ConvRot — recipe/profile target
 
-Keep the checkpoint companion JSON and its declared support files within the
-selected checkpoint directory or configured model roots:
+A ConvRot checkpoint is only the checkpoint format. It additionally needs a
+companion recipe that resolves to an installed execution profile.
+
+DuckMotion currently ships:
 
 ```text
-REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors
-redgraftLTX25Fast2K_ltx25RedgraftNSFW.json
-gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors
-ltx-2.3-spatial-upscaler-x2-1.1.safetensors
-ltx-2.5-video-vae-conv-bf16.safetensors
-ltx-2.5-audio-vae-bf16.safetensors
+ltx25_convrot_two_stage_av
 ```
 
-DuckMotion should discover the REDGraft checkpoint as one normal public model.
-The checkpoint does not need to be renamed merely to contain the word `convrot`;
-REDGraft identity and safetensors metadata are part of detection. The
-companion/support files are runtime dependencies, not separate user model
-selections.
+The profile was audited from a REDGraft workflow, so the current REDGraft
+checkpoint remains our first real hardware fixture. It is **not** the routing
+key: any unrelated LTX-2.5 ConvRot checkpoint with a compatible recipe may be
+used for the same rows.
+
+A companion recipe may be a native `duckmotion_recipe` manifest or a supported
+exported workflow that DuckMotion can map structurally to the profile. Required
+support assets may live anywhere under the configured model root or DuckMotion
+asset cache.
 
 ## 3. Smoke order
 
@@ -134,21 +123,15 @@ selections.
 | 3 | Wan2.2 I2V A14B BF16 | I2V | 512x320, 17 frames | only if 16 GB path is viable |
 | 4 | LTX-2.5 Diffusers | T2V + audio | 768x512, 33 frames | 1536x1024, 121 frames |
 | 5 | LTX-2.5 Diffusers | I2V + audio | same canary with source image | reference-size only after T2V passes |
-| 6 | REDGraft LTX-2.5 ConvRot | T2V + audio | 768x512, 33 frames | saved recipe 1152x768, 241 frames |
-| 7 | REDGraft LTX-2.5 ConvRot | I2V + audio | same canary with source image | saved-recipe size only after T2V passes |
+| 6 | LTX-2.5 INT8 ConvRot | T2V + audio | 768x512, 33 frames | resolved profile defaults |
+| 7 | LTX-2.5 INT8 ConvRot | I2V + audio | same canary with source image | resolved profile defaults after T2V passes |
 
 Canary dimensions still obey model constraints: Wan uses dimensions divisible by
-16 and `4k+1` frames; both LTX runtimes use final dimensions divisible by 64 and
-`8k+1` frames. Standard LTX keeps its explicit distilled sigma schedule even for
-canaries. ConvRot keeps its fixed REDGraft high/low sigma schedules, Euler, CFG
-1, AV latent path, guide cropping, and latent-upscale chain; canaries only reduce
-resolution/frame count.
+16 and `4k+1` frames; LTX uses dimensions divisible by 64 and `8k+1` frames.
 
-The REDGraft top-level workflow controls store duration `10`, width `1152`,
-height `768`, and frame rate `24`. Its linked length expression is
-`duration * frame_rate + 1`, so the reference gate is `10 * 24 + 1 = 241`
-frames. Group-local 97-frame / 25-fps widget values are overridden by these
-linked top-level controls and are not the effective saved recipe.
+For `ltx25_convrot_two_stage_av`, the current profile defaults are 1152x768,
+241 frames, 24 fps. Those are profile defaults rather than ConvRot-format
+defaults. The smoke runner obtains them from runtime readiness metadata.
 
 ## 4. API-driven runner
 
@@ -158,50 +141,42 @@ Safe preflight:
 python tools/run_hardware_smoke.py
 ```
 
-The runner distinguishes standard LTX from ConvRot so a REDGraft checkpoint
-cannot accidentally satisfy the Diffusers LTX smoke target.
+The runner identifies ConvRot using readiness `source_format=int8_convrot`, not
+checkpoint/model names.
 
-Run the two practical REDGraft canaries explicitly:
+Run the practical ConvRot canaries:
 
 ```bash
 python tools/run_hardware_smoke.py \
   --execute \
-  --ltx-convrot-model "/path/to/REDGraft.safetensors" \
   --only ltx25-convrot-t2v-canary \
   --only ltx25-convrot-i2v-canary
 ```
 
-After both canaries pass, opt into the heavier saved-recipe row:
-
-```bash
-python tools/run_hardware_smoke.py \
-  --execute --include-heavy \
-  --ltx-convrot-model "/path/to/REDGraft.safetensors" \
-  --only ltx25-convrot-default
-```
-
-The runner can also target a discovered GGUF source explicitly through the
-existing Wan override arguments. For a T2V-capable GGUF checkpoint:
+If multiple ConvRot checkpoints are discovered, an explicit public model identity
+can still be supplied as a test override:
 
 ```bash
 python tools/run_hardware_smoke.py \
   --execute \
-  --wan-5b-model "/path/to/...H.gguf" \
-  --only wan-ti2v-5b-canary
+  --ltx-convrot-model "/path/to/community-checkpoint.safetensors" \
+  --only ltx25-convrot-t2v-canary
 ```
 
-For an I2V-capable GGUF checkpoint:
+After the canaries pass, opt into the heavy/default-profile row:
 
 ```bash
 python tools/run_hardware_smoke.py \
   --execute --include-heavy \
-  --wan-i2v-model "/path/to/...H.gguf" \
-  --only wan-i2v-a14b-canary
+  --only ltx25-convrot-default
 ```
 
+The payload for that row is built from `runtime.profile_defaults` rather than a
+model-name check.
+
 The Wan row names predate restored GGUF discovery; the selected public
-model/source is what determines execution. GGUF execution itself must not depend
-on UI/test naming.
+model/source determines execution. GGUF execution itself must not depend on UI or
+test naming.
 
 ## 5. Pass conditions
 
@@ -222,30 +197,35 @@ A row passes only when:
 A row additionally requires stage-1 latent generation, 2x latent upsample,
 stage-2 distilled refinement, synchronized audio, and normalized final output.
 
-### REDGraft LTX-2.5 ConvRot
+### LTX-2.5 ConvRot
 
 A row additionally requires:
 
-- strict companion/support-asset readiness before model loading;
+- checkpoint format recognized independently of recipe selection;
+- a single compatible execution profile resolved without ambiguity;
+- all profile-declared support assets resolved before model loading;
 - pinned Comfy core imports without starting a Comfy server;
-- video/audio latent concatenation for both sampling stages;
-- exact fixed high/low REDGraft sigma schedules, Euler, CFG 1;
-- `LTXVCropGuides` feeding stage-two conditioning;
-- learned latent upsampler followed by bicubic 0.5 resize;
-- I2V guide strength 0.7 in stage one and 1.0 after upscale;
+- all nodes required by the **selected profile** available;
+- the selected profile worker receives profile-owned defaults;
 - synchronized decoded audio/video in the output artifact;
 - successful worker teardown and GPU lease release.
+
+For the current `ltx25_convrot_two_stage_av` profile, validation additionally
+checks its fixed two-stage AV sigma/guide/upscale/decode contract documented in
+`docs/LTX25_CONVROT.md`.
 
 ## 6. Failure classification
 
 Classify failures before changing generic architecture:
 
-1. **runtime** — missing import/version/CUDA/GGUF/Comfy package;
-2. **weights** — missing/gated/incomplete snapshot, missing GGUF mate, or missing ConvRot companion/support asset;
-3. **memory** — VRAM/host-RAM/offload failure;
-4. **pipeline API** — upstream Diffusers or pinned-Comfy behavior/signature mismatch;
-5. **adapter** — DuckMotion request/result/pair/recipe translation bug;
-6. **model behavior** — generation completes but output/conditioning/audio is invalid.
+1. **runtime** — missing import/version/CUDA/GGUF/Comfy package or runtime-owned checkout;
+2. **format** — checkpoint architecture/format cannot be identified safely;
+3. **recipe** — no compatible profile, ambiguous profile evidence, or unsupported manifest;
+4. **assets** — missing/gated/incomplete snapshot, missing GGUF mate, or recipe-declared support asset unavailable;
+5. **memory** — VRAM/host-RAM/offload failure;
+6. **pipeline API** — upstream Diffusers or pinned-Comfy behavior/signature mismatch;
+7. **adapter** — DuckMotion request/result/pair/recipe translation bug;
+8. **model behavior** — generation completes but output/conditioning/audio is invalid.
 
-Do not expose Wan/LTX/runtime/format selectors to solve a failure. Fix the
-responsible descriptor/backend/runtime instead.
+Do not expose Wan/LTX/runtime/format/profile selectors to solve a failure. Fix the
+responsible descriptor/provider/profile/backend/runtime instead.
