@@ -120,5 +120,6 @@ def test_runtime_requirements_are_reproducible():
     ltx = (root / "ltx25.txt").read_text(encoding="utf-8")
 
     assert "diffusers==0.39.0" in wan
+    assert "gguf==0.19.0" in wan
     assert "git+https://github.com/huggingface/diffusers.git@" in ltx
     assert "git+https://github.com/huggingface/diffusers.git\n" not in ltx

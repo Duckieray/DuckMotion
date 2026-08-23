@@ -9,6 +9,8 @@ Current runnable video workflows:
 
 - Wan 2.2 pure text-to-video checkpoints through an isolated Diffusers runtime.
 - Wan 2.2 pure image-to-video checkpoints through the same isolated runtime.
+- Wan 2.2 paired GGUF transformer checkpoints through the same Wan runtime,
+  assembled with Diffusers pipeline components behind the model selection.
 - Wan 2.2 TI2V-5B text-to-video through Diffusers. The upstream checkpoint also
   supports image-to-video, but current Diffusers does not expose that TI2V image
   path, so DuckMotion intentionally does not advertise it yet.
@@ -18,7 +20,7 @@ Current runnable video workflows:
 ## Design Rules
 
 - The model/checkpoint is the user-facing selection.
-- Architecture and backend IDs are internal routing metadata.
+- Architecture, checkpoint format, and backend IDs are internal routing metadata.
 - Inputs and controls come from model capabilities, defaults, and constraints.
 - A model is only marked runnable when an installed backend owns its workflow.
 - Model runtimes are process-isolated from WebbDuck and from each other.
@@ -41,7 +43,7 @@ DuckMotion/
 |- storage_runtime.py       # config/jobs/staging/gallery persistence
 |- storage_api.py
 |- wan_backend.py           # isolated Wan adapter
-|- wan_worker.py            # Wan-only Diffusers process
+|- wan_worker.py            # Wan Diffusers + GGUF worker
 |- ltx_backend.py           # isolated LTX-2.5 adapter
 |- ltx_worker.py            # LTX-only two-stage Diffusers process
 |- runtime_requirements/
@@ -93,12 +95,24 @@ DuckMotion at that interpreter:
 export DUCKMOTION_WAN_PYTHON=/path/to/wan-env/bin/python
 ```
 
-The current Wan runtime uses Diffusers `WanPipeline` and
-`WanImageToVideoPipeline`.
+The Wan runtime supports both normal Diffusers model layouts and the historical
+hybrid Diffusers + GGUF path.
 
 - Pure T2V checkpoints run through `WanPipeline`.
 - Pure I2V checkpoints run through `WanImageToVideoPipeline` and require a
   source image.
+- Local `.gguf` transformer files are discovered as models. For Wan2.2 A14B
+  high/low denoiser pairs, names ending in `H.gguf` / `L.gguf` (including
+  `_H.gguf` / `_L.gguf`) are grouped into one selectable checkpoint. DuckMotion
+  loads both with `WanTransformer3DModel.from_single_file()` and
+  `GGUFQuantizationConfig`, then injects them as `transformer` and
+  `transformer_2` into the normal Wan pipeline. The UI never asks the user to
+  choose a GGUF backend.
+- The Diffusers base repo supplies scheduler/VAE/text-encoder/config components
+  for GGUF models. DuckMotion selects the normal Wan2.2 A14B T2V or I2V base
+  from the requested operation. Advanced deployments can override those
+  component sources with `DUCKMOTION_WAN_GGUF_T2V_BASE` and
+  `DUCKMOTION_WAN_GGUF_I2V_BASE`.
 - `Wan-AI/Wan2.2-TI2V-5B-Diffusers` is recognized as a TI2V checkpoint, but the
   current Diffusers integration exposes its text-conditioned path only. Its
   descriptor records that upstream I2V capability internally while keeping the
@@ -107,9 +121,9 @@ The current Wan runtime uses Diffusers `WanPipeline` and
 
 On a 16 GB GPU, automatic memory policy prefers group offloading and falls back
 to sequential CPU offload when necessary. Very large local checkpoints can use
-Diffusers disk-backed group offload when host RAM is insufficient. This makes
-loading safer, but it does not make enormous BF16 checkpoints fast or guarantee
-that every A14B package is practical on a given host.
+Diffusers disk-backed group offload when host RAM is insufficient. GGUF reduces
+transformer memory/storage pressure but still depends on the base pipeline
+components and does not make every generation cheap.
 
 ### LTX-2.5
 
@@ -144,7 +158,9 @@ offload.
 
 DuckMotion searches architecture-neutral model roots plus the normal Hugging
 Face cache. A model does not need to be copied into a DuckMotion-specific
-folder.
+folder. Local discovery includes recognized Diffusers `model_index.json`
+directories and Wan `.gguf` transformer files. Paired H/L GGUF files appear as
+one model entry rather than two backend choices.
 
 Relevant environment variables include:
 
@@ -161,17 +177,14 @@ The persisted user configuration contains only:
 - `models_dir`
 - `output_dir`
 
-There is no persisted architecture/backend selector.
-
-Hugging Face cache selections persist the canonical repository ID instead of a
-snapshot revision directory. Local models persist their local path. This keeps
-checkpoint-specific identity/defaults stable when a cached snapshot directory is
-named only by a revision hash.
+There is no persisted architecture/backend/format selector. Hugging Face cache
+selections persist the canonical repository ID. Local Diffusers models and
+local GGUF models persist their local source path.
 
 ## Capability-Driven UI
 
 The browser workspace consumes the same public model descriptors as the API.
-It does not choose a runtime family.
+It does not choose a runtime family or checkpoint format.
 
 When the selected model changes, the UI automatically:
 
@@ -202,6 +215,8 @@ Wan runtime:
 - `DUCKMOTION_WAN_PYTHON`
 - `DUCKMOTION_WAN_TIMEOUT_SECONDS`
 - `DUCKMOTION_WAN_OFFLOAD` (`auto`, `group`, `sequential`, `model`, `none`)
+- `DUCKMOTION_WAN_GGUF_T2V_BASE` (optional advanced component-source override)
+- `DUCKMOTION_WAN_GGUF_I2V_BASE` (optional advanced component-source override)
 
 LTX runtime:
 
@@ -241,14 +256,14 @@ The plugin exposes model-driven routes for:
 - recent WebbDuck images
 
 Public model payloads expose capabilities, defaults, constraints, and readiness.
-They do not require clients to understand architecture/backend IDs.
+They do not require clients to understand architecture/backend IDs or GGUF.
 
 ## Development Status
 
-The runtime architecture **and browser UI are now model-driven**. The remaining
-validation milestone is the real hardware smoke matrix rather than another
-architecture/UI compatibility layer.
+The runtime architecture and browser UI are model-driven. Real hardware smoke
+validation must cover the restored Wan GGUF path alongside normal Wan Diffusers
+and LTX-2.5 before the video migration is considered regression-clean.
 
 No full cross-model GPU validation should be inferred from the presence of a
-backend. The planned smoke matrix covers Wan and LTX-2.5 alongside WebbDuck's
-SDXL, FLUX, Krea, and Qwen image backends.
+backend. The planned smoke matrix covers Wan Diffusers, Wan GGUF and LTX-2.5
+alongside WebbDuck's SDXL, FLUX, Krea, and Qwen image backends.

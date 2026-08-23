@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from model_runtime import UNKNOWN_ARCHITECTURE, describe_video_model
@@ -86,8 +87,50 @@ def _public_item(*, descriptor, location: str) -> dict[str, Any]:
     return payload
 
 
+def _gguf_pair_identity(path: Path) -> tuple[str, str | None]:
+    """Return a stable pair-family key and H/L role for historical Wan GGUF names."""
+    stem = path.stem
+    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    if not match:
+        return stem.lower(), None
+    family = match.group(1).rstrip("_ .-") or stem
+    return family.lower(), match.group(3).upper()
+
+
+def _discover_gguf_sources(root: Path) -> list[Path]:
+    """Return one selectable source per GGUF pair, preferring H over L."""
+    try:
+        files = sorted(root.rglob("*.gguf"), key=lambda p: str(p).lower())
+    except OSError:
+        return []
+
+    grouped: dict[tuple[str, str], dict[str, Path]] = {}
+    singles: list[Path] = []
+    for path in files:
+        family, role = _gguf_pair_identity(path)
+        if role is None:
+            singles.append(path)
+            continue
+        key = (str(path.parent.resolve()).lower(), family)
+        grouped.setdefault(key, {})[role] = path
+
+    selected = list(singles)
+    for paths in grouped.values():
+        selected.append(paths.get("H") or paths.get("L"))
+    return sorted((path for path in selected if path is not None), key=lambda p: str(p).lower())
+
+
+def _gguf_display_name(path: Path) -> str:
+    family, _role = _gguf_pair_identity(path)
+    # Keep the actual checkpoint identity visible while removing only the H/L
+    # implementation suffix from paired transformer files.
+    original = path.stem
+    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", original)
+    return (match.group(1).rstrip("_ .-") if match else original) or family
+
+
 def discover_local_video_models(roots: Iterable[Path]) -> list[dict[str, Any]]:
-    """Discover recognized video Diffusers directories beneath local roots."""
+    """Discover recognized video Diffusers directories and Wan GGUF files."""
     found: dict[str, dict[str, Any]] = {}
     seen_paths: set[str] = set()
 
@@ -98,7 +141,7 @@ def discover_local_video_models(roots: Iterable[Path]) -> list[dict[str, Any]]:
         try:
             indexes = sorted(root.rglob("model_index.json"), key=lambda p: str(p).lower())
         except OSError:
-            continue
+            indexes = []
 
         for index in indexes:
             model_dir = index.parent
@@ -108,6 +151,20 @@ def discover_local_video_models(roots: Iterable[Path]) -> list[dict[str, Any]]:
             seen_paths.add(resolved)
             descriptor = describe_video_model(str(model_dir), name=model_dir.name)
             if descriptor.architecture not in VIDEO_ARCHITECTURES:
+                continue
+            key = f"local:{resolved}"
+            found[key] = _public_item(descriptor=descriptor, location="local")
+
+        for gguf_path in _discover_gguf_sources(root):
+            resolved = str(gguf_path.resolve())
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            descriptor = describe_video_model(
+                resolved,
+                name=_gguf_display_name(gguf_path),
+            )
+            if descriptor.architecture != "wan22":
                 continue
             key = f"local:{resolved}"
             found[key] = _public_item(descriptor=descriptor, location="local")

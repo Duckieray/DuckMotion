@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 
@@ -82,9 +83,32 @@ def _tokens(config: Mapping[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
+def _gguf_pair_role(path: Path) -> str | None:
+    """Return H/L when a GGUF filename uses the historical Wan pair suffix."""
+    stem = path.stem
+    match = re.search(r"(?i)(?:[_ .-]?)([hl])$", stem)
+    return match.group(1).upper() if match else None
+
+
 def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str, Any]]:
     path = Path(source).expanduser()
     display_name = str(name or "").lower()
+    if path.exists() and path.is_file():
+        suffix = path.suffix.lower()
+        detection: dict[str, Any] = {
+            "method": "local_single_file",
+            "confidence": "high",
+            "format": suffix.lstrip(".") or "single_file",
+        }
+        if suffix == ".gguf":
+            detection["format"] = "gguf"
+            role = _gguf_pair_role(path)
+            if role:
+                detection["pair_role"] = role
+        return " ".join(
+            part for part in (str(path).lower(), display_name, path.name.lower()) if part
+        ), detection
+
     if path.exists() and path.is_dir():
         index = _read_json(path / "model_index.json")
         transformer = _read_json(path / "transformer" / "config.json")
@@ -101,6 +125,7 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
         return tokens, {
             "method": "local_config",
             "confidence": "high" if index or transformer else "medium",
+            "format": "diffusers",
             "dual_transformer": bool(
                 (path / "transformer_2").exists() or index.get("transformer_2")
             ),
@@ -108,6 +133,7 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
     return " ".join(part for part in (str(source).lower(), display_name) if part), {
         "method": "source_name",
         "confidence": "medium",
+        "format": "diffusers",
     }
 
 
@@ -154,7 +180,17 @@ def detect_video_architecture(
             or "wanpipeline" in tokens
         )
 
-        if is_ti2v:
+        # Community Wan checkpoints may explicitly advertise both workflows.
+        # Keep that as one model choice; backend/runtime details stay internal.
+        if is_i2v and is_t2v and not is_ti2v:
+            capabilities = VideoCapabilities(
+                text_to_video=True,
+                image_to_video=True,
+                negative_prompt=True,
+                source_image_required=False,
+            )
+            variant = "t2v_i2v"
+        elif is_ti2v:
             capabilities = VideoCapabilities(
                 text_to_video=True,
                 image_to_video=False,
