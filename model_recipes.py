@@ -21,6 +21,7 @@ class ExecutionProfile:
     profile_id: str
     architecture: str
     source_format: str
+    worker: str
     required_assets: tuple[str, ...] = ()
     evidence_node_types: frozenset[str] = frozenset()
     required_runtime_nodes: frozenset[str] = frozenset()
@@ -34,6 +35,8 @@ class ExecutionProfileRegistry:
         profile_id = str(profile.profile_id or "").strip()
         if not profile_id:
             raise ValueError("Execution profile must define profile_id")
+        if not str(profile.worker or "").strip():
+            raise ValueError(f"Execution profile '{profile_id}' must define a worker")
         if profile_id in self._profiles:
             raise ValueError(f"Duplicate DuckMotion execution profile: {profile_id}")
         self._profiles[profile_id] = profile
@@ -107,6 +110,7 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
     profile_id="ltx25_convrot_two_stage_av",
     architecture="ltx25",
     source_format="int8_convrot",
+    worker="ltx_convrot_worker.py",
     required_assets=(
         "text_encoder",
         "latent_upscaler",
