@@ -115,7 +115,14 @@ def _provenance_message(checkpoint: Path, result: dict) -> str:
         source = str(record.get("source_id") or record.get("source_url") or "trusted provider")
         recipes = record.get("recipe_paths") or []
         if recipes:
-            return f"{checkpoint.name}: provenance matched {source}; cached {len(recipes)} recipe candidate(s)"
+            cache_note = "cached" if result.get("cached") else "cached now"
+            return f"{checkpoint.name}: provenance matched {source}; {cache_note} {len(recipes)} recipe candidate(s)"
+        diagnostics = record.get("diagnostics") if isinstance(record.get("diagnostics"), dict) else {}
+        candidates = int(diagnostics.get("recipe_candidates") or 0)
+        errors = diagnostics.get("recipe_errors") or []
+        if candidates:
+            detail = f": {errors[0]}" if errors else ""
+            return f"{checkpoint.name}: provenance matched {source}; {candidates} JSON sidecar(s) were listed but not cached{detail}"
         return f"{checkpoint.name}: provenance matched {source}, but it publishes no JSON recipe sidecar"
     if result.get("ambiguous"):
         return f"{checkpoint.name}: checkpoint provenance is ambiguous across trusted providers"
@@ -186,9 +193,18 @@ def _prepare_provider(
                         f"{checkpoint.name}: trusted provenance was resolved, but none of its recipe sidecars map to an installed execution profile"
                     )
                 else:
-                    blockers.append(
-                        f"{checkpoint.name}: trusted provenance was resolved, but no recipe sidecar is published for this version"
-                    )
+                    diagnostics = record.get("diagnostics") if isinstance(record.get("diagnostics"), dict) else {}
+                    candidates = int(diagnostics.get("recipe_candidates") or 0)
+                    errors = diagnostics.get("recipe_errors") or []
+                    if candidates:
+                        detail = f": {errors[0]}" if errors else ""
+                        blockers.append(
+                            f"{checkpoint.name}: provenance listed {candidates} recipe sidecar(s), but none could be cached{detail}"
+                        )
+                    else:
+                        blockers.append(
+                            f"{checkpoint.name}: trusted provenance was resolved, but no recipe sidecar is published for this version"
+                        )
             else:
                 blockers.append(
                     f"{checkpoint.name}: format recognized, but no supported execution recipe was resolved"
