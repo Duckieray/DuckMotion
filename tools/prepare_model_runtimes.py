@@ -28,6 +28,16 @@ RUNTIMES = {
     ),
 }
 
+# TorchAudio is part of Comfy's LTX audio path and must be ABI/CUDA-compatible
+# with the installed torch build. CUDA 13.0 publishes torch/vision 2.12.x, but
+# does not publish a matching torchaudio 2.12.x wheel. Keep standard Wan/LTX on
+# the newer stack while ConvRot uses the latest official matched cu130 trio.
+DEFAULT_TORCH_STACKS = {
+    "wan": ("2.12.1", "0.27.1", None),
+    "ltx25": ("2.12.1", "0.27.1", None),
+    "ltx25_convrot": ("2.11.0", "0.26.0", "2.11.0"),
+}
+
 
 def run(cmd: list[str], *, dry_run: bool) -> None:
     print("+", " ".join(shlex.quote(str(part)) for part in cmd))
@@ -37,6 +47,31 @@ def run(cmd: list[str], *, dry_run: bool) -> None:
 
 def python_in_venv(root: Path) -> Path:
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def resolve_torch_stack(
+    runtime: str,
+    *,
+    torch_version: str | None = None,
+    torchvision_version: str | None = None,
+    torchaudio_version: str | None = None,
+) -> tuple[str, str, str | None]:
+    default_torch, default_vision, default_audio = DEFAULT_TORCH_STACKS[runtime]
+
+    if runtime == "ltx25_convrot":
+        overrides = (torch_version, torchvision_version, torchaudio_version)
+        if any(value is not None for value in overrides) and not all(value is not None for value in overrides):
+            raise ValueError(
+                "LTX ConvRot requires a matched torch/torchvision/torchaudio stack. "
+                "When overriding one version, provide --torch-version, "
+                "--torchvision-version, and --torchaudio-version together."
+            )
+
+    return (
+        torch_version or default_torch,
+        torchvision_version or default_vision,
+        torchaudio_version or default_audio,
+    )
 
 
 def prepare_comfy_checkout(env_root: Path, *, dry_run: bool) -> Path:
@@ -57,9 +92,9 @@ def prepare(
     *,
     root: Path,
     base_python: str,
-    torch_version: str,
-    torchvision_version: str,
-    torchaudio_version: str,
+    torch_version: str | None,
+    torchvision_version: str | None,
+    torchaudio_version: str | None,
     torch_index: str,
     dry_run: bool,
 ) -> tuple[str, Path]:
@@ -70,14 +105,27 @@ def prepare(
         env_root.parent.mkdir(parents=True, exist_ok=True)
         run([base_python, "-m", "venv", str(env_root)], dry_run=dry_run)
 
+    resolved_torch, resolved_vision, resolved_audio = resolve_torch_stack(
+        runtime,
+        torch_version=torch_version,
+        torchvision_version=torchvision_version,
+        torchaudio_version=torchaudio_version,
+    )
+    stack_label = f"torch={resolved_torch} torchvision={resolved_vision}"
+    if resolved_audio:
+        stack_label += f" torchaudio={resolved_audio}"
+    print(f"Torch stack: {stack_label} ({torch_index})")
+
     runtime_python = str(python_path)
     run([runtime_python, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], dry_run=dry_run)
     torch_packages = [
-        f"torch=={torch_version}",
-        f"torchvision=={torchvision_version}",
+        f"torch=={resolved_torch}",
+        f"torchvision=={resolved_vision}",
     ]
     if runtime == "ltx25_convrot":
-        torch_packages.append(f"torchaudio=={torchaudio_version}")
+        if not resolved_audio:
+            raise ValueError("LTX ConvRot requires torchaudio")
+        torch_packages.append(f"torchaudio=={resolved_audio}")
     run(
         [
             runtime_python,
@@ -107,29 +155,44 @@ def main() -> int:
         help="Directory that owns isolated virtual environments.",
     )
     parser.add_argument("--python", default=sys.executable, help="Base Python used to create venvs.")
-    parser.add_argument("--torch-version", default="2.12.1")
-    parser.add_argument("--torchvision-version", default="0.27.1")
-    parser.add_argument("--torchaudio-version", default="2.12.1")
+    parser.add_argument(
+        "--torch-version",
+        default=None,
+        help="Override the runtime-specific default torch version.",
+    )
+    parser.add_argument(
+        "--torchvision-version",
+        default=None,
+        help="Override the runtime-specific default torchvision version.",
+    )
+    parser.add_argument(
+        "--torchaudio-version",
+        default=None,
+        help="Override ConvRot torchaudio; all three torch versions must be overridden together for ConvRot.",
+    )
     parser.add_argument("--torch-index", default="cu130", help="PyTorch wheel channel, e.g. cu130 or cu132.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     selected = list(RUNTIMES) if args.runtime == "all" else [args.runtime]
     exports: list[tuple[str, Path]] = []
-    for runtime in selected:
-        print(f"\n== {runtime} ==")
-        exports.append(
-            prepare(
-                runtime,
-                root=args.root.expanduser(),
-                base_python=args.python,
-                torch_version=args.torch_version,
-                torchvision_version=args.torchvision_version,
-                torchaudio_version=args.torchaudio_version,
-                torch_index=args.torch_index,
-                dry_run=args.dry_run,
+    try:
+        for runtime in selected:
+            print(f"\n== {runtime} ==")
+            exports.append(
+                prepare(
+                    runtime,
+                    root=args.root.expanduser(),
+                    base_python=args.python,
+                    torch_version=args.torch_version,
+                    torchvision_version=args.torchvision_version,
+                    torchaudio_version=args.torchaudio_version,
+                    torch_index=args.torch_index,
+                    dry_run=args.dry_run,
+                )
             )
-        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     print("\nAdd these to the WebbDuck/DuckMotion launch environment:")
     for env_var, python_path in exports:
