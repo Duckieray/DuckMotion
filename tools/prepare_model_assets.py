@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from model_asset_providers import ModelAssetProvider, model_asset_providers
 from model_provenance import prepare_checkpoint_provenance
 from model_recipes import execution_profiles
+from provider_credentials import apply_provider_credentials_to_environment
 from provenance_providers import register_builtin_provenance_providers
 from runtime_paths import resolve_runtime_python
 
@@ -257,6 +258,10 @@ def main() -> int:
     if not models_dir.exists() or not models_dir.is_dir():
         parser.error(f"Model directory does not exist: {models_dir}")
 
+    # Public provider access remains anonymous by default. If the user opted to
+    # save credentials in WebbDuck Settings, inherit them for provenance and HF
+    # child-download processes without requiring shell exports.
+    apply_provider_credentials_to_environment()
     register_builtin_provenance_providers()
     print("Preparing model provenance and declared support assets")
     blockers: list[str] = []
@@ -278,8 +283,9 @@ def main() -> int:
             "provenance/recipe/access issue and rerun setup."
         )
         print(
-            "For gated Hugging Face assets, accept the repository terms and "
-            "authenticate normally."
+            "For gated provider assets, accept the provider's terms if required. "
+            "Optional Hugging Face/Civitai tokens can be saved in WebbDuck Settings; "
+            "environment variables remain advanced overrides."
         )
         return status or 3
 
