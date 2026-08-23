@@ -4,28 +4,34 @@
 # tools/prepare_model_runtimes.py from the selected CUDA wheel channel.
 # The pinned Comfy core checkout lives inside this runtime and is imported as a
 # library by ltx_convrot_worker.py; no Comfy HTTP server is started.
+# Frontend/workflow-template/docs packages from Comfy's requirements are
+# intentionally omitted; core runtime dependencies used by the pinned checkout
+# are kept explicit here instead of relying on accidental transitive installs.
 comfy-kitchen==0.2.31
+comfy-aimdo==0.4.13
 torchsde
 einops
 transformers>=4.50.3,<6
 tokenizers>=0.13.3
 sentencepiece
 safetensors>=0.5.0
-aiohttp
+aiohttp>=3.11.8
 yarl>=1.18.0
 PyYAML
 Pillow
 scipy
 tqdm
 psutil
+alembic
+SQLAlchemy>=2.0.0
 filelock
 av>=16.0.0
 requests
-simpleeval
+simpleeval>=1.0.0
 blake3
 kornia>=0.7.1
 spandrel
-pydantic>=2
-pydantic-settings
+pydantic>=2,<3
+pydantic-settings>=2,<3
 numpy>=2.0.0
 soundfile
