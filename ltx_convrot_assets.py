@@ -1,13 +1,13 @@
-"""Asset/config discovery for LTX-2.5 INT8 ConvRot checkpoints.
+"""Recipe and asset discovery for LTX-2.5 INT8 ConvRot checkpoints.
 
-ConvRot is an internal checkpoint format. Public model payloads continue to expose
-only model identity and capabilities; this module is used by discovery/readiness and
-the isolated worker to locate the model's support weights.
+Checkpoint identity, recipe identity, and product/display names are deliberately
+separate. This module never selects behavior because a checkpoint is named
+REDGraft (or any other brand). A checkpoint is detected as LTX-2.5 ConvRot by
+format/metadata hints; a declarative companion recipe then describes the support
+assets and must map to a DuckMotion-supported execution profile.
 
-Known REDGraft checkpoints use a fixed DuckMotion recipe audited from the original
-companion workflow. The workflow JSON is therefore optional at runtime: if present
-it is still used as declarative evidence, but normal users do not have to keep a
-Comfy workflow beside the checkpoint just to run the supported recipe.
+Companion JSON is evidence/configuration only. DuckMotion never executes an
+arbitrary Comfy graph.
 """
 
 from __future__ import annotations
@@ -26,31 +26,23 @@ MODEL_CATEGORY_DIRS = {
     "diffusion-models",
     "unet",
 }
-
-# The audited REDGraft workflow declares these exact support assets. They are
-# published by Lightricks; setup downloads them into DuckMotion's private asset
-# cache when they are not already available in the user's shared model roots.
-REDGRAFT_ASSET_SOURCES: dict[str, dict[str, str]] = {
-    "text_encoder": {
-        "name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
-        "repo_id": "Lightricks/LTX-2.5",
-        "filename": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
-    },
-    "latent_upscaler": {
-        "name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-        "repo_id": "Lightricks/LTX-2.3",
-        "filename": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-    },
-    "video_vae": {
-        "name": "ltx-2.5-video-vae-conv-bf16.safetensors",
-        "repo_id": "Lightricks/LTX-2.5",
-        "filename": "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
-    },
-    "audio_vae": {
-        "name": "ltx-2.5-audio-vae-bf16.safetensors",
-        "repo_id": "Lightricks/LTX-2.5",
-        "filename": "vae/ltx-2.5-audio-vae-bf16.safetensors",
-    },
+SUPPORTED_EXECUTION_PROFILE = "ltx25_convrot_two_stage_av"
+PROFILE_REQUIRED_NODES = {
+    "UNETLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "ConditioningZeroOut",
+    "LTXVConditioning",
+    "LTXVEmptyLatentAudio",
+    "LTXVConcatAVLatent",
+    "SamplerCustomAdvanced",
+    "LTXVSeparateAVLatent",
+    "LTXVCropGuides",
+    "LTXVLatentUpsampler",
+    "LatentUpscaleBy",
+    "LatentUpscaleModelLoader",
+    "VAEDecodeTiled",
+    "LTXVAudioVAEDecode",
 }
 
 
@@ -84,34 +76,24 @@ def _safetensors_header_text(path: Path) -> str:
 
 
 def is_ltx25_convrot_path(value: str | Path) -> bool:
+    """Best-effort format detection with structural metadata preferred.
+
+    Filename tokens remain a compatibility fallback because many community
+    safetensors omit useful format metadata, but no model/brand name selects a
+    recipe or execution behavior.
+    """
     path = Path(value).expanduser()
     if path.suffix.lower() != ".safetensors":
         return False
 
     name = path.name.lower()
+    if path.exists() and path.is_file():
+        header = _safetensors_header_text(path)
+        if "convrot" in header and any(marker in header for marker in ("ltx", "ltxv")):
+            return True
+
     ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
-    if ltx_name and ("convrot" in name or "redgraft" in name):
-        return True
-
-    if not path.exists() or not path.is_file():
-        return False
-    header = _safetensors_header_text(path)
-    return (
-        "convrot" in header
-        and any(marker in f"{name}\n{header}" for marker in ("ltx", "ltxv", "redgraft"))
-    )
-
-
-def is_redgraft_checkpoint(value: str | Path) -> bool:
-    path = Path(value).expanduser()
-    return is_ltx25_convrot_path(path) and "redgraft" in path.name.lower()
-
-
-def builtin_recipe_asset_names(checkpoint: str | Path) -> dict[str, str] | None:
-    """Return the fixed audited asset contract for known REDGraft checkpoints."""
-    if not is_redgraft_checkpoint(checkpoint):
-        return None
-    return {kind: spec["name"] for kind, spec in REDGRAFT_ASSET_SOURCES.items()}
+    return ltx_name and "convrot" in name
 
 
 def _walk_strings(value: Any) -> Iterable[str]:
@@ -123,6 +105,16 @@ def _walk_strings(value: Any) -> Iterable[str]:
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _walk_strings(item)
+
+
+def _walk_dicts(value: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _walk_dicts(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk_dicts(item)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -152,12 +144,59 @@ def find_companion_config(checkpoint: str | Path) -> Path | None:
         if any(checkpoint_name == Path(value).name.lower() for value in values):
             return candidate
 
+    # Some community bundles rename the checkpoint after exporting the workflow.
+    # A single sidecar JSON is a deterministic candidate, but recipe validation
+    # below still has to prove it maps to a supported execution profile.
     if len(candidates) == 1:
         return candidates[0]
     return None
 
 
-def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, str]:
+def _node_types(config: dict[str, Any]) -> set[str]:
+    types: set[str] = set()
+    for item in _walk_dicts(config):
+        value = item.get("type")
+        if isinstance(value, str):
+            types.add(value)
+    return types
+
+
+def execution_profile(config: dict[str, Any]) -> str | None:
+    """Map declarative workflow evidence to a supported execution profile."""
+    node_types = _node_types(config)
+    if PROFILE_REQUIRED_NODES.issubset(node_types):
+        return SUPPORTED_EXECUTION_PROFILE
+    return None
+
+
+def _declared_models(config: dict[str, Any]) -> list[dict[str, str]]:
+    """Extract declarative model records embedded by Comfy workflow exports."""
+    declarations: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in _walk_dicts(config):
+        models = item.get("models")
+        if not isinstance(models, list):
+            continue
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            name = str(model.get("name") or "").replace("\\", "/").strip()
+            url = str(model.get("url") or "").strip()
+            directory = str(model.get("directory") or "").replace("\\", "/").strip()
+            if not name:
+                continue
+            key = (Path(name).name.lower(), url)
+            if key in seen:
+                continue
+            seen.add(key)
+            declarations.append({"name": Path(name).name, "url": url, "directory": directory})
+    return declarations
+
+
+def extract_asset_manifest(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
+    """Extract required asset names and optional source URLs from a recipe."""
+    declarations = _declared_models(config)
+    declared_by_name = {item["name"].lower(): item for item in declarations}
     strings = [value.replace("\\", "/") for value in _walk_strings(config)]
     safetensors = [Path(value).name for value in strings if value.lower().endswith(".safetensors")]
     checkpoint_lower = checkpoint_name.lower()
@@ -171,12 +210,27 @@ def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> di
                 return name
         return ""
 
-    return {
-        "text_encoder": first(lambda v: "gemma" in v and "ltx" in v and "convrot" in v),
+    names = {
+        "text_encoder": first(lambda v: "gemma" in v and "ltx" in v),
         "latent_upscaler": first(lambda v: "spatial-upscaler" in v or "latent-upscaler" in v),
         "video_vae": first(lambda v: "video-vae" in v),
         "audio_vae": first(lambda v: "audio-vae" in v),
     }
+    manifest: dict[str, dict[str, str]] = {}
+    for kind, name in names.items():
+        declaration = declared_by_name.get(name.lower(), {}) if name else {}
+        manifest[kind] = {
+            "name": name,
+            "url": str(declaration.get("url") or ""),
+            "directory": str(declaration.get("directory") or ""),
+        }
+    return manifest
+
+
+def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, str]:
+    """Compatibility helper retained for callers/tests that only need names."""
+    manifest = extract_asset_manifest(config, checkpoint_name)
+    return {kind: value.get("name", "") for kind, value in manifest.items()}
 
 
 def _inferred_model_root(checkpoint_path: Path) -> Path | None:
@@ -241,19 +295,13 @@ def inspect_convrot_assets(
     checkpoint_path = Path(checkpoint).expanduser()
     config_path = find_companion_config(checkpoint_path)
     config = read_json(config_path) if config_path else {}
-    builtin_names = builtin_recipe_asset_names(checkpoint_path)
-
-    if config:
-        names = extract_asset_names(config, checkpoint_path.name)
-        recipe_source = "companion_json"
-    elif builtin_names:
-        names = builtin_names
-        recipe_source = "builtin:redgraft_ltx25_fast2k"
-    else:
-        names = {kind: "" for kind in ASSET_KINDS}
-        recipe_source = None
-
+    profile = execution_profile(config) if config else None
+    manifest = extract_asset_manifest(config, checkpoint_path.name) if config else {
+        kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS
+    }
+    names = {kind: manifest[kind].get("name", "") for kind in ASSET_KINDS}
     roots = candidate_search_roots(checkpoint_path, models_dir=models_dir)
+
     resolved: dict[str, str | None] = {}
     missing: list[str] = []
     for kind in ASSET_KINDS:
@@ -261,19 +309,22 @@ def inspect_convrot_assets(
         path = resolve_named_asset(name, roots) if name else None
         resolved[kind] = str(path) if path else None
         if not path:
-            missing.append(name or f"<{kind} not declared by a supported recipe>")
+            missing.append(name or f"<{kind} not declared in companion recipe>")
 
     checkpoint_present = checkpoint_path.exists() and checkpoint_path.is_file()
     if not checkpoint_present:
         missing.insert(0, checkpoint_path.name or str(checkpoint_path))
-    if recipe_source is None:
-        missing.insert(0, "<supported companion recipe>")
+    if config_path is None:
+        missing.insert(0, "<companion recipe JSON>")
+    elif profile is None:
+        missing.insert(0, "<unsupported LTX ConvRot execution recipe>")
 
     return {
-        "ready": checkpoint_present and recipe_source is not None and not missing,
+        "ready": checkpoint_present and config_path is not None and profile is not None and not missing,
         "checkpoint": str(checkpoint_path),
         "config_path": str(config_path) if config_path else None,
-        "recipe_source": recipe_source,
+        "execution_profile": profile,
+        "asset_manifest": manifest,
         "asset_names": names,
         "assets": resolved,
         "missing": missing,
