@@ -175,11 +175,11 @@ def main() -> int:
     args = parser.parse_args()
 
     selected = list(RUNTIMES) if args.runtime == "all" else [args.runtime]
-    exports: list[tuple[str, Path]] = []
+    prepared: list[tuple[str, Path]] = []
     try:
         for runtime in selected:
             print(f"\n== {runtime} ==")
-            exports.append(
+            prepared.append(
                 prepare(
                     runtime,
                     root=args.root.expanduser(),
@@ -194,9 +194,11 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
-    print("\nAdd these to the WebbDuck/DuckMotion launch environment:")
-    for env_var, python_path in exports:
-        print(f"export {env_var}={shlex.quote(str(python_path))}")
+    print("\nDuckMotion runtimes prepared:")
+    for _env_var, python_path in prepared:
+        print(f"  {python_path}")
+    print("No environment-variable setup is required for these default paths.")
+    print("DUCKMOTION_*_PYTHON variables remain available as advanced overrides.")
     return 0
 
 
