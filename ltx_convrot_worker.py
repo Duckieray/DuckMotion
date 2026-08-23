@@ -26,6 +26,10 @@ IMAGE_PREPROCESS_LONG_EDGE = 1536
 IMAGE_PREPROCESS_COMPRESSION = 18
 LATENT_UPSCALE_METHOD = "bicubic"
 LATENT_UPSCALE_SCALE = 0.5
+VIDEO_DECODE_TILE_SIZE = 480
+VIDEO_DECODE_OVERLAP = 96
+VIDEO_DECODE_TEMPORAL_SIZE = 96
+VIDEO_DECODE_TEMPORAL_OVERLAP = 24
 
 
 def _snap_dimension(value: int) -> int:
@@ -57,7 +61,7 @@ def _call_node(nodes_module, node_name: str, **kwargs):
     if function_name:
         function = getattr(instance, function_name)
     else:
-        function = getattr(cls, "execute", None) or getattr(instance, "execute", None)
+        function = getattr(instance, "execute", None) or getattr(cls, "execute", None)
     if function is None:
         raise RuntimeError(f"Comfy node {node_name!r} has no executable function")
 
@@ -326,9 +330,19 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
     video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage2)[:2]
 
-    # VAE objects implement the same decode operation used by Comfy's VAEDecode
-    # node. Keeping the decode local avoids depending on an output-node plugin.
-    images = video_vae.decode(video_latent["samples"])
+    # The saved REDGraft decoder uses tiled video VAE decoding with explicit
+    # spatial/temporal tile sizes. Keeping those values avoids a large full-latent
+    # decode allocation and reproduces the graph's final decode behavior.
+    images = _call_node(
+        nodes,
+        "VAEDecodeTiled",
+        samples=video_latent,
+        vae=video_vae,
+        tile_size=VIDEO_DECODE_TILE_SIZE,
+        overlap=VIDEO_DECODE_OVERLAP,
+        temporal_size=VIDEO_DECODE_TEMPORAL_SIZE,
+        temporal_overlap=VIDEO_DECODE_TEMPORAL_OVERLAP,
+    )[0]
     audio = _call_node(
         nodes,
         "LTXVAudioVAEDecode",
@@ -383,6 +397,10 @@ def _run(request: dict, output_dir: Path) -> dict:
         "image_preprocess_compression": IMAGE_PREPROCESS_COMPRESSION if input_image else None,
         "latent_upscale_method": LATENT_UPSCALE_METHOD,
         "latent_upscale_scale": LATENT_UPSCALE_SCALE,
+        "video_decode_tile_size": VIDEO_DECODE_TILE_SIZE,
+        "video_decode_overlap": VIDEO_DECODE_OVERLAP,
+        "video_decode_temporal_size": VIDEO_DECODE_TEMPORAL_SIZE,
+        "video_decode_temporal_overlap": VIDEO_DECODE_TEMPORAL_OVERLAP,
         "runtime": {
             "device": "cuda",
             "source_format": "int8_convrot",
