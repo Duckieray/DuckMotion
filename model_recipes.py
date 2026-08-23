@@ -12,7 +12,7 @@ recipe/workflow code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 
@@ -25,6 +25,8 @@ class ExecutionProfile:
     required_assets: tuple[str, ...] = ()
     evidence_node_types: frozenset[str] = frozenset()
     required_runtime_nodes: frozenset[str] = frozenset()
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+    constraints: Mapping[str, Any] = field(default_factory=dict)
 
 
 class ExecutionProfileRegistry:
@@ -132,6 +134,21 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
             "SaveVideo",
         }
     ),
+    defaults={
+        "width": 1152,
+        "height": 768,
+        "num_frames": 241,
+        "fps": 24,
+        "num_inference_steps": 8,
+        "guidance_scale": 1.0,
+    },
+    constraints={
+        "dimension_multiple": 64,
+        "frame_count_modulo": 8,
+        "frame_count_remainder": 1,
+        "generation_stages": 2,
+        "sampling_schedule_locked": True,
+    },
 )
 execution_profiles.register(LTX25_CONVROT_TWO_STAGE_AV)
 
