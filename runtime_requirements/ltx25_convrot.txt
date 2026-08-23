@@ -12,6 +12,7 @@ comfy-aimdo==0.4.13
 torchsde
 einops
 transformers>=4.50.3,<6
+huggingface-hub>=0.27
 tokenizers>=0.13.3
 sentencepiece
 safetensors>=0.5.0
