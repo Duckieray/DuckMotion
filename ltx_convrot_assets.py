@@ -1,13 +1,13 @@
 """Recipe and asset discovery for LTX-2.5 INT8 ConvRot checkpoints.
 
-Checkpoint identity, recipe identity, and product/display names are deliberately
-separate. This module never selects behavior because a checkpoint is named
-REDGraft (or any other brand). A checkpoint is detected as LTX-2.5 ConvRot by
-format/metadata hints; a declarative companion recipe then describes the support
-assets and must map to a DuckMotion-supported execution profile.
+Checkpoint identity, execution recipe, and product/display names are deliberately
+separate. This module detects the checkpoint format, resolves a compatible
+execution profile through DuckMotion's generic recipe registry, and resolves the
+assets declared by the companion recipe.
 
-Companion JSON is evidence/configuration only. DuckMotion never executes an
-arbitrary Comfy graph.
+A companion may use DuckMotion's small declarative ``duckmotion_recipe`` schema
+or be an exported workflow that an adapter can map to a supported profile.
+DuckMotion never executes arbitrary companion/workflow code.
 """
 
 from __future__ import annotations
@@ -15,34 +15,26 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
+
+from model_recipes import (
+    LTX25_CONVROT_TWO_STAGE_AV,
+    execution_profiles,
+    profile_from_explicit_manifest,
+)
 
 
-ASSET_KINDS = ("text_encoder", "latent_upscaler", "video_vae", "audio_vae")
+ARCHITECTURE = "ltx25"
+SOURCE_FORMAT = "int8_convrot"
+SUPPORTED_EXECUTION_PROFILE = LTX25_CONVROT_TWO_STAGE_AV.profile_id
+PROFILE_REQUIRED_NODES = set(LTX25_CONVROT_TWO_STAGE_AV.evidence_node_types)
+ASSET_KINDS = tuple(LTX25_CONVROT_TWO_STAGE_AV.required_assets)
 MODEL_CATEGORY_DIRS = {
     "checkpoints",
     "checkpoint",
     "diffusion_models",
     "diffusion-models",
     "unet",
-}
-SUPPORTED_EXECUTION_PROFILE = "ltx25_convrot_two_stage_av"
-PROFILE_REQUIRED_NODES = {
-    "UNETLoader",
-    "CLIPLoader",
-    "VAELoader",
-    "ConditioningZeroOut",
-    "LTXVConditioning",
-    "LTXVEmptyLatentAudio",
-    "LTXVConcatAVLatent",
-    "SamplerCustomAdvanced",
-    "LTXVSeparateAVLatent",
-    "LTXVCropGuides",
-    "LTXVLatentUpsampler",
-    "LatentUpscaleBy",
-    "LatentUpscaleModelLoader",
-    "VAEDecodeTiled",
-    "LTXVAudioVAEDecode",
 }
 
 
@@ -75,31 +67,10 @@ def _safetensors_header_text(path: Path) -> str:
         return str(payload).lower()
 
 
-def is_ltx25_convrot_path(value: str | Path) -> bool:
-    """Best-effort format detection with structural metadata preferred.
-
-    Filename tokens remain a compatibility fallback because many community
-    safetensors omit useful format metadata, but no model/brand name selects a
-    recipe or execution behavior.
-    """
-    path = Path(value).expanduser()
-    if path.suffix.lower() != ".safetensors":
-        return False
-
-    name = path.name.lower()
-    if path.exists() and path.is_file():
-        header = _safetensors_header_text(path)
-        if "convrot" in header and any(marker in header for marker in ("ltx", "ltxv")):
-            return True
-
-    ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
-    return ltx_name and "convrot" in name
-
-
 def _walk_strings(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
-    elif isinstance(value, dict):
+    elif isinstance(value, Mapping):
         for item in value.values():
             yield from _walk_strings(item)
     elif isinstance(value, (list, tuple)):
@@ -144,15 +115,15 @@ def find_companion_config(checkpoint: str | Path) -> Path | None:
         if any(checkpoint_name == Path(value).name.lower() for value in values):
             return candidate
 
-    # Some community bundles rename the checkpoint after exporting the workflow.
-    # A single sidecar JSON is a deterministic candidate, but recipe validation
-    # below still has to prove it maps to a supported execution profile.
+    # Community bundles sometimes rename a checkpoint after exporting its recipe.
+    # A single sidecar is deterministic evidence, but profile validation below
+    # still has to prove that the recipe is supported.
     if len(candidates) == 1:
         return candidates[0]
     return None
 
 
-def _node_types(config: dict[str, Any]) -> set[str]:
+def _node_types(config: Mapping[str, Any]) -> set[str]:
     types: set[str] = set()
     for item in _walk_dicts(config):
         value = item.get("type")
@@ -161,16 +132,61 @@ def _node_types(config: dict[str, Any]) -> set[str]:
     return types
 
 
-def execution_profile(config: dict[str, Any]) -> str | None:
-    """Map declarative workflow evidence to a supported execution profile."""
-    node_types = _node_types(config)
-    if PROFILE_REQUIRED_NODES.issubset(node_types):
-        return SUPPORTED_EXECUTION_PROFILE
-    return None
+def execution_profile(config: Mapping[str, Any]) -> str | None:
+    """Resolve a supported profile from explicit manifest or structural evidence."""
+    explicit = profile_from_explicit_manifest(
+        config,
+        architecture=ARCHITECTURE,
+        source_format=SOURCE_FORMAT,
+    )
+    if explicit is not None:
+        return explicit.profile_id
+
+    inferred = execution_profiles.infer_from_node_types(
+        architecture=ARCHITECTURE,
+        source_format=SOURCE_FORMAT,
+        node_types=_node_types(config),
+    )
+    return inferred.profile_id if inferred is not None else None
 
 
-def _declared_models(config: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract declarative model records embedded by Comfy workflow exports."""
+def is_ltx25_convrot_path(value: str | Path) -> bool:
+    """Best-effort format detection; profile selection happens separately.
+
+    Structural safetensors metadata and a compatible companion recipe are the
+    strongest signals. Filename hints are compatibility fallbacks for community
+    checkpoints that omit useful metadata. A brand token may be recognized as a
+    weak *format* hint for known legacy files, but it never chooses a profile,
+    asset set, or runtime behavior.
+    """
+    path = Path(value).expanduser()
+    if path.suffix.lower() != ".safetensors":
+        return False
+
+    if path.exists() and path.is_file():
+        header = _safetensors_header_text(path)
+        if "convrot" in header and any(marker in header for marker in ("ltx", "ltxv")):
+            return True
+
+        companion = find_companion_config(path)
+        if companion is not None:
+            config = read_json(companion)
+            if execution_profile(config):
+                return True
+
+    name = path.name.lower()
+    ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
+    if ltx_name and "convrot" in name:
+        return True
+
+    # Compatibility only for existing community artifacts whose filenames omit
+    # the format marker. This is deliberately not used anywhere in recipe or
+    # asset resolution.
+    return ltx_name and "redgraft" in name
+
+
+def _declared_models(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Extract declarative model records embedded by exported workflows."""
     declarations: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for item in _walk_dicts(config):
@@ -193,8 +209,35 @@ def _declared_models(config: dict[str, Any]) -> list[dict[str, str]]:
     return declarations
 
 
-def extract_asset_manifest(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
-    """Extract required asset names and optional source URLs from a recipe."""
+def _explicit_asset_manifest(config: Mapping[str, Any], profile_id: str) -> dict[str, dict[str, str]] | None:
+    recipe = config.get("duckmotion_recipe")
+    if not isinstance(recipe, Mapping):
+        return None
+    if str(recipe.get("profile") or "").strip() != profile_id:
+        return None
+    raw_assets = recipe.get("assets")
+    if not isinstance(raw_assets, Mapping):
+        return None
+
+    manifest: dict[str, dict[str, str]] = {}
+    for kind in ASSET_KINDS:
+        raw = raw_assets.get(kind)
+        if isinstance(raw, str):
+            manifest[kind] = {"name": Path(raw).name, "url": "", "directory": ""}
+        elif isinstance(raw, Mapping):
+            name = str(raw.get("name") or "").replace("\\", "/").strip()
+            manifest[kind] = {
+                "name": Path(name).name if name else "",
+                "url": str(raw.get("url") or "").strip(),
+                "directory": str(raw.get("directory") or "").replace("\\", "/").strip(),
+            }
+        else:
+            manifest[kind] = {"name": "", "url": "", "directory": ""}
+    return manifest
+
+
+def _workflow_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
+    """Adapt an exported LTX workflow into the supported profile's asset roles."""
     declarations = _declared_models(config)
     declared_by_name = {item["name"].lower(): item for item in declarations}
     strings = [value.replace("\\", "/") for value in _walk_strings(config)]
@@ -227,8 +270,18 @@ def extract_asset_manifest(config: dict[str, Any], checkpoint_name: str = "") ->
     return manifest
 
 
-def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> dict[str, str]:
-    """Compatibility helper retained for callers/tests that only need names."""
+def extract_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
+    """Extract required asset roles from any companion accepted by this provider."""
+    profile_id = execution_profile(config)
+    if not profile_id:
+        return {kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS}
+    explicit = _explicit_asset_manifest(config, profile_id)
+    if explicit is not None:
+        return explicit
+    return _workflow_asset_manifest(config, checkpoint_name)
+
+
+def extract_asset_names(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, str]:
     manifest = extract_asset_manifest(config, checkpoint_name)
     return {kind: value.get("name", "") for kind, value in manifest.items()}
 
@@ -295,8 +348,9 @@ def inspect_convrot_assets(
     checkpoint_path = Path(checkpoint).expanduser()
     config_path = find_companion_config(checkpoint_path)
     config = read_json(config_path) if config_path else {}
-    profile = execution_profile(config) if config else None
-    manifest = extract_asset_manifest(config, checkpoint_path.name) if config else {
+    profile_id = execution_profile(config) if config else None
+    profile = execution_profiles.get(profile_id)
+    manifest = extract_asset_manifest(config, checkpoint_path.name) if profile else {
         kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS
     }
     names = {kind: manifest[kind].get("name", "") for kind in ASSET_KINDS}
@@ -317,13 +371,16 @@ def inspect_convrot_assets(
     if config_path is None:
         missing.insert(0, "<companion recipe JSON>")
     elif profile is None:
-        missing.insert(0, "<unsupported LTX ConvRot execution recipe>")
+        missing.insert(0, "<unsupported execution recipe>")
 
+    recipe = config.get("duckmotion_recipe") if isinstance(config, Mapping) else None
+    recipe_adapter = "duckmotion_manifest" if isinstance(recipe, Mapping) else ("workflow_adapter" if profile else None)
     return {
         "ready": checkpoint_present and config_path is not None and profile is not None and not missing,
         "checkpoint": str(checkpoint_path),
         "config_path": str(config_path) if config_path else None,
-        "execution_profile": profile,
+        "execution_profile": profile.profile_id if profile else None,
+        "recipe_adapter": recipe_adapter,
         "asset_manifest": manifest,
         "asset_names": names,
         "assets": resolved,
