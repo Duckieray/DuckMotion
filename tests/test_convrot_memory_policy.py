@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+
+import ltx_convrot_runtime_worker
 from ltx_convrot_runtime_worker import resolve_memory_policy
 from model_recipes import LTX25_CONVROT_TWO_STAGE_AV
 
@@ -38,7 +41,7 @@ def test_convrot_auto_keeps_large_gpu_on_performance_policy(monkeypatch):
     policy = resolve_memory_policy(48.0)
 
     assert policy["name"] == "performance"
-    assert policy["comfy_args"] == ("--cache-none",)
+    assert policy["comfy_args"] == ("--disable-dynamic-vram", "--cache-none")
 
 
 def test_convrot_memory_policy_can_be_overridden_for_debugging(monkeypatch):
@@ -51,3 +54,23 @@ def test_convrot_memory_policy_can_be_overridden_for_debugging(monkeypatch):
 
 def test_execution_profile_uses_vram_aware_runtime_launcher():
     assert LTX25_CONVROT_TWO_STAGE_AV.worker == "ltx_convrot_runtime_worker.py"
+
+
+def test_embedded_comfy_enables_cli_parsing_before_memory_modules():
+    source = inspect.getsource(ltx_convrot_runtime_worker._initialize_aimdo_control)
+    assert "comfy.options.enable_args_parsing()" in source
+    assert source.index("comfy.options.enable_args_parsing()") < source.index("from comfy.cli_args import args")
+    assert "aimdo_control.init(" in source
+
+
+def test_embedded_comfy_activates_dynamic_model_patcher():
+    source = inspect.getsource(ltx_convrot_runtime_worker._activate_dynamic_vram)
+    assert "aimdo_control.init_devices(" in source
+    assert "model_patcher.CoreModelPatcher = model_patcher.ModelPatcherDynamic" in source
+    assert "memory_management.aimdo_enabled = True" in source
+
+
+def test_required_dynamic_policy_fails_closed_if_activation_is_missing():
+    source = inspect.getsource(ltx_convrot_runtime_worker._prepare_comfy)
+    assert 'if policy["dynamic_vram"] and not dynamic_vram_active:' in source
+    assert "requires Comfy DynamicVRAM" in source
