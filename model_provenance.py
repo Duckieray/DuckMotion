@@ -35,7 +35,11 @@ def _path_key(path: str | Path) -> str:
 
 def _stat_state(path: Path) -> dict[str, int]:
     stat = path.stat()
-    return {"size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+    return {
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "ctime_ns": int(stat.st_ctime_ns),
+    }
 
 
 def _load_index() -> dict[str, Any]:
@@ -61,8 +65,12 @@ def _save_index(value: Mapping[str, Any]) -> None:
     temp.replace(path)
 
 
+def _same_file_state(cached: Mapping[str, Any], state: Mapping[str, int]) -> bool:
+    return all(int(cached.get(key, -1)) == int(state[key]) for key in ("size", "mtime_ns", "ctime_ns"))
+
+
 def checkpoint_fingerprint(checkpoint: str | Path) -> dict[str, Any]:
-    """Return a cached-or-computed SHA256 tied to the file's size and mtime."""
+    """Return a cached-or-computed SHA256 tied to the local file change state."""
     path = Path(checkpoint).expanduser()
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(path)
@@ -72,8 +80,7 @@ def checkpoint_fingerprint(checkpoint: str | Path) -> dict[str, Any]:
     cached = index["fingerprints"].get(key)
     if (
         isinstance(cached, dict)
-        and int(cached.get("size", -1)) == state["size"]
-        and int(cached.get("mtime_ns", -1)) == state["mtime_ns"]
+        and _same_file_state(cached, state)
         and len(str(cached.get("sha256") or "")) == 64
     ):
         return {**state, "sha256": str(cached["sha256"]).lower(), "cached": True}
@@ -127,11 +134,7 @@ def _record_matches(path: Path, record: Mapping[str, Any]) -> bool:
         state = _stat_state(path)
     except OSError:
         return False
-    return (
-        int(record.get("size", -1)) == state["size"]
-        and int(record.get("mtime_ns", -1)) == state["mtime_ns"]
-        and len(str(record.get("sha256") or "")) == 64
-    )
+    return _same_file_state(record, state) and len(str(record.get("sha256") or "")) == 64
 
 
 def cached_provenance(checkpoint: str | Path) -> dict[str, Any] | None:
@@ -204,6 +207,7 @@ def prepare_checkpoint_provenance(checkpoint: str | Path) -> dict[str, Any]:
         "sha256": fingerprint["sha256"],
         "size": fingerprint["size"],
         "mtime_ns": fingerprint["mtime_ns"],
+        "ctime_ns": fingerprint["ctime_ns"],
         "recipe_paths": recipe_paths,
         "metadata_path": match.get("metadata_path"),
     }
