@@ -27,10 +27,11 @@ from ltx_convrot_worker import (
     _snap_frames,
     _stage2_seed,
 )
+from model_recipes import LTX25_CONVROT_TWO_STAGE_AV
 from model_runtime import describe_video_model
 
 
-def test_redgraft_recipe_constants_are_locked():
+def test_two_stage_av_profile_constants_are_locked():
     assert HIGH_SIGMAS == "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
     assert LOW_SIGMAS == "0.85, 0.7250, 0.4219, 0.0"
     assert IMAGE_GUIDE_STRENGTH == 0.7
@@ -47,6 +48,9 @@ def test_redgraft_recipe_constants_are_locked():
     assert _snap_dimension(1152) == 1152
     assert _snap_dimension(768) == 768
     assert _snap_frames(10 * 24 + 1) == 241
+    assert LTX25_CONVROT_TWO_STAGE_AV.defaults["width"] == 1152
+    assert LTX25_CONVROT_TWO_STAGE_AV.defaults["height"] == 768
+    assert LTX25_CONVROT_TWO_STAGE_AV.defaults["num_frames"] == 241
 
 
 def test_stage_two_uses_a_distinct_reproducible_noise_seed():
@@ -84,7 +88,7 @@ def test_call_node_supports_classic_and_modern_execute_contracts():
     assert _call_node(nodes, "InstanceModern", value=4, ignored="filtered") == (12,)
 
 
-def test_worker_source_keeps_redgraft_av_second_stage_and_decoder_order():
+def test_worker_source_keeps_two_stage_av_order():
     import ltx_convrot_worker
 
     source = inspect.getsource(ltx_convrot_worker._run)
@@ -107,8 +111,10 @@ def test_worker_source_keeps_redgraft_av_second_stage_and_decoder_order():
     assert '"crf": VIDEO_OUTPUT_CRF' in source
 
 
-def test_runtime_probe_requires_redgraft_node_surface():
+def test_runtime_probe_uses_selected_profile_node_surface():
     source = inspect.getsource(LTX25ConvRotBackend._probe_runtime)
+    assert "profile.required_runtime_nodes" in source
+    assert "required_nodes.difference(nodes.NODE_CLASS_MAPPINGS)" in source
     assert "init_extra_nodes(init_custom_nodes=False, init_api_nodes=False)" in source
     for node_name in (
         "LTXVEmptyLatentAudio",
@@ -120,57 +126,50 @@ def test_runtime_probe_requires_redgraft_node_surface():
         "CreateVideo",
         "SaveVideo",
     ):
-        assert node_name in source
+        assert node_name in LTX25_CONVROT_TWO_STAGE_AV.required_runtime_nodes
 
 
-def test_companion_recipe_resolves_all_required_assets_from_standard_model_root(tmp_path: Path):
+def test_declarative_recipe_resolves_assets_without_brand_or_special_layout(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints" / "ltx"
     checkpoint_dir.mkdir(parents=True)
-    checkpoint = checkpoint_dir / "REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors"
+    checkpoint = checkpoint_dir / "AcmeCinemaLTX25ConvRotQ8.safetensors"
     checkpoint.touch()
 
     names = {
-        "text_encoder": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
-        "latent_upscaler": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-        "video_vae": "ltx-2.5-video-vae-conv-bf16.safetensors",
-        "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
+        "text_encoder": "acme-text-encoder.safetensors",
+        "latent_upscaler": "acme-spatial-upscaler.safetensors",
+        "video_vae": "acme-video-vae.safetensors",
+        "audio_vae": "acme-audio-vae.safetensors",
     }
-    for folder, kind in (
-        ("text_encoders", "text_encoder"),
-        ("latent_upscale_models", "latent_upscaler"),
-        ("vae", "video_vae"),
-        ("vae", "audio_vae"),
-    ):
-        path = tmp_path / folder / names[kind]
+    for name in names.values():
+        path = tmp_path / "arbitrary" / "support" / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
 
-    (checkpoint_dir / "redgraftLTX25Fast2K_ltx25RedgraftNSFW.json").write_text(
+    (checkpoint_dir / "acme.recipe.json").write_text(
         json.dumps(
             {
                 "checkpoint": checkpoint.name,
-                "text_encoder": names["text_encoder"],
-                "latent_upscaler": names["latent_upscaler"],
-                "video_vae": names["video_vae"],
-                "audio_vae": names["audio_vae"],
+                "duckmotion_recipe": {
+                    "profile": LTX25_CONVROT_TWO_STAGE_AV.profile_id,
+                    "assets": names,
+                },
             }
         ),
         encoding="utf-8",
     )
 
-    # Readiness does not receive the persisted models_dir. The standard
-    # models/checkpoints/... layout must therefore infer tmp_path as the shared
-    # model root and resolve sibling text_encoders/vae/upscaler directories.
-    result = inspect_convrot_assets(checkpoint)
+    result = inspect_convrot_assets(checkpoint, models_dir=str(tmp_path))
     assert result["ready"] is True
+    assert result["execution_profile"] == LTX25_CONVROT_TWO_STAGE_AV.profile_id
+    assert result["recipe_adapter"] == "duckmotion_manifest"
     assert result["missing"] == []
-    assert str(tmp_path) in result["search_roots"]
     for kind, name in names.items():
         assert Path(result["assets"][kind]).name == name
 
 
-def test_convrot_descriptor_routes_privately_with_reference_defaults(tmp_path: Path):
-    checkpoint = tmp_path / "REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors"
+def test_convrot_descriptor_routes_format_without_choosing_recipe(tmp_path: Path):
+    checkpoint = tmp_path / "AcmeCinemaLTX25ConvRotQ8.safetensors"
     checkpoint.touch()
     descriptor = describe_video_model(str(checkpoint))
 
@@ -180,11 +179,8 @@ def test_convrot_descriptor_routes_privately_with_reference_defaults(tmp_path: P
     assert descriptor.capabilities.text_to_video is True
     assert descriptor.capabilities.image_to_video is True
     assert descriptor.capabilities.audio_output is True
-    assert descriptor.defaults["width"] == 1152
-    assert descriptor.defaults["height"] == 768
-    assert descriptor.defaults["num_frames"] == 241
-    assert descriptor.defaults["fps"] == 24
-    assert descriptor.defaults["guidance_scale"] == 1.0
+    assert descriptor.constraints["checkpoint_recipe_required"] is True
     public = descriptor.to_public_dict()
     assert "backend" not in public
     assert "architecture" not in public
+    assert "execution_profile" not in public
