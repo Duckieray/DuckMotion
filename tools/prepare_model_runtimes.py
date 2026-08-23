@@ -87,6 +87,22 @@ def prepare_comfy_checkout(env_root: Path, *, dry_run: bool) -> Path:
     return comfy_root
 
 
+def repair_runtime(runtime: str, *, root: Path, dry_run: bool) -> tuple[str, Path]:
+    """Repair deterministic runtime adjuncts without reinstalling packages."""
+    env_var, _requirements = RUNTIMES[runtime]
+    env_root = root / runtime
+    python_path = python_in_venv(env_root)
+    if not python_path.exists() and not dry_run:
+        raise ValueError(
+            f"DuckMotion runtime '{runtime}' does not exist at {python_path}. "
+            "Run setup without --skip-runtimes to create it."
+        )
+    if runtime == "ltx25_convrot":
+        comfy_root = prepare_comfy_checkout(env_root, dry_run=dry_run)
+        print(f"Pinned Comfy core: {comfy_root} @ {COMFYUI_COMMIT}")
+    return env_var, python_path
+
+
 def prepare(
     runtime: str,
     *,
@@ -171,6 +187,11 @@ def main() -> int:
         help="Override ConvRot torchaudio; all three torch versions must be overridden together for ConvRot.",
     )
     parser.add_argument("--torch-index", default="cu130", help="PyTorch wheel channel, e.g. cu130 or cu132.")
+    parser.add_argument(
+        "--repair-only",
+        action="store_true",
+        help="Repair runtime-owned adjuncts (such as pinned Comfy) without reinstalling Python packages.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -179,18 +200,23 @@ def main() -> int:
     try:
         for runtime in selected:
             print(f"\n== {runtime} ==")
-            prepared.append(
-                prepare(
-                    runtime,
-                    root=args.root.expanduser(),
-                    base_python=args.python,
-                    torch_version=args.torch_version,
-                    torchvision_version=args.torchvision_version,
-                    torchaudio_version=args.torchaudio_version,
-                    torch_index=args.torch_index,
-                    dry_run=args.dry_run,
+            if args.repair_only:
+                prepared.append(
+                    repair_runtime(runtime, root=args.root.expanduser(), dry_run=args.dry_run)
                 )
-            )
+            else:
+                prepared.append(
+                    prepare(
+                        runtime,
+                        root=args.root.expanduser(),
+                        base_python=args.python,
+                        torch_version=args.torch_version,
+                        torchvision_version=args.torchvision_version,
+                        torchaudio_version=args.torchaudio_version,
+                        torch_index=args.torch_index,
+                        dry_run=args.dry_run,
+                    )
+                )
     except ValueError as exc:
         parser.error(str(exc))
 
