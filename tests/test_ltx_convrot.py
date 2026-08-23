@@ -33,7 +33,7 @@ def test_redgraft_recipe_constants_are_locked():
     assert LATENT_UPSCALE_SCALE == 0.5
     assert _snap_dimension(1152) == 1152
     assert _snap_dimension(768) == 768
-    assert _snap_frames(241) == 241
+    assert _snap_frames(10 * 24 + 1) == 241
 
 
 def test_call_node_supports_classic_function_and_modern_execute_contracts():
@@ -71,7 +71,7 @@ def test_worker_source_keeps_redgraft_av_and_second_stage_order():
     assert "strength=UPSCALED_IMAGE_GUIDE_STRENGTH" in source
 
 
-def test_companion_recipe_resolves_all_required_assets(tmp_path: Path):
+def test_companion_recipe_resolves_all_required_assets_from_standard_model_root(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints" / "ltx"
     checkpoint_dir.mkdir(parents=True)
     checkpoint = checkpoint_dir / "REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors"
@@ -106,9 +106,13 @@ def test_companion_recipe_resolves_all_required_assets(tmp_path: Path):
         encoding="utf-8",
     )
 
-    result = inspect_convrot_assets(checkpoint, models_dir=str(tmp_path))
+    # Readiness does not receive the persisted models_dir. The standard
+    # models/checkpoints/... layout must therefore infer tmp_path as the shared
+    # model root and resolve sibling text_encoders/vae/upscaler directories.
+    result = inspect_convrot_assets(checkpoint)
     assert result["ready"] is True
     assert result["missing"] == []
+    assert str(tmp_path) in result["search_roots"]
     for kind, name in names.items():
         assert Path(result["assets"][kind]).name == name
 
@@ -126,6 +130,7 @@ def test_convrot_descriptor_routes_privately_with_reference_defaults(tmp_path: P
     assert descriptor.capabilities.audio_output is True
     assert descriptor.defaults["width"] == 1152
     assert descriptor.defaults["height"] == 768
+    assert descriptor.defaults["num_frames"] == 241
     assert descriptor.defaults["fps"] == 24
     assert descriptor.defaults["guidance_scale"] == 1.0
     public = descriptor.to_public_dict()
