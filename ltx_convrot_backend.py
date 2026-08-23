@@ -10,7 +10,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from ltx_convrot_assets import inspect_convrot_assets
+from ltx_convrot_assets import SUPPORTED_EXECUTION_PROFILE, inspect_convrot_assets
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 
 
@@ -50,7 +50,7 @@ class LTX25ConvRotBackend(VideoBackend):
                 "ready": False,
                 "python": python_exe,
                 "comfy_root": str(comfy_root),
-                "reason": "DUCKMOTION_LTX_CONVROT_PYTHON is not configured or does not exist.",
+                "reason": "LTX ConvRot runtime Python is not configured or does not exist.",
             }
         if not comfy_root.exists():
             return {
@@ -103,7 +103,7 @@ except Exception as exc:
 if out["ready"] and not out.get("cuda_available"):
     out["ready"] = False; out["reason"] = "ConvRot runtime imports succeed, but CUDA is unavailable."
 elif out["missing_nodes"]:
-    out["reason"] = "Pinned Comfy core is missing one or more nodes required by the REDGraft runtime."
+    out["reason"] = "Pinned Comfy core is missing nodes required by the supported LTX ConvRot execution profile."
 elif out["missing"]:
     out["reason"] = "One or more ConvRot runtime imports are unavailable."
 print(json.dumps(out))
@@ -160,12 +160,13 @@ print(json.dumps(out))
         ready = bool(runtime.get("ready") and assets.get("ready"))
         reason = runtime.get("reason")
         if runtime.get("ready") and not assets.get("ready"):
-            reason = "ConvRot checkpoint is missing required companion assets: " + ", ".join(assets.get("missing") or [])
+            reason = "LTX ConvRot checkpoint recipe/assets are incomplete: " + ", ".join(assets.get("missing") or [])
         payload = {
             **runtime,
             "ready": ready,
             "reason": reason,
             "source_format": "int8_convrot",
+            "execution_profile": assets.get("execution_profile"),
             "assets": assets,
         }
         self._readiness_key = key
@@ -183,11 +184,14 @@ print(json.dumps(out))
         config = kwargs.get("config") if isinstance(kwargs.get("config"), dict) else {}
         assets = inspect_convrot_assets(descriptor.source, models_dir=str(config.get("models_dir") or "") or None)
         if not assets.get("ready"):
-            raise RuntimeError("LTX ConvRot companion assets are incomplete: " + ", ".join(assets.get("missing") or []))
+            raise RuntimeError("LTX ConvRot recipe/assets are incomplete: " + ", ".join(assets.get("missing") or []))
+        profile = str(assets.get("execution_profile") or "")
+        if profile != SUPPORTED_EXECUTION_PROFILE:
+            raise RuntimeError(f"Unsupported LTX ConvRot execution profile: {profile or '<missing>'}")
 
         python_exe = self._python()
         if not python_exe:
-            raise RuntimeError("DUCKMOTION_LTX_CONVROT_PYTHON is not configured")
+            raise RuntimeError("LTX ConvRot runtime Python is not configured")
         comfy_root = self._comfy_root(python_exe)
         worker = Path(__file__).with_name("ltx_convrot_worker.py")
         is_cancelled: Callable[[], bool] | None = kwargs.get("is_cancelled")
@@ -196,6 +200,7 @@ print(json.dumps(out))
         payload = {
             "model_path": descriptor.source,
             "model_name": descriptor.name,
+            "execution_profile": profile,
             "config_path": assets.get("config_path"),
             "assets": assets.get("assets"),
             "prompt": str(request.get("prompt") or "").strip(),
