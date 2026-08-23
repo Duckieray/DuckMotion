@@ -4,11 +4,11 @@ Status: **runtime and capability-driven UI implemented; real-model smoke validat
 
 DuckMotion follows the same checkpoint-first rule as WebbDuck:
 
-> The user selects a model. DuckMotion determines capabilities, defaults,
-> constraints, readiness, and runtime automatically.
+> The user selects a model. DuckMotion determines capabilities, readiness,
+> runtime, execution recipe, and support assets automatically.
 
-Architecture/backend identifiers are internal routing metadata. They are never
-required user choices.
+Architecture/backend/profile identifiers are internal routing metadata. They are
+never required user choices.
 
 ## Implemented Flow
 
@@ -16,12 +16,11 @@ required user choices.
 selected model
     |
     v
-model discovery / descriptor
+model discovery / checkpoint descriptor
     |
+    +-- architecture + source format (private)
     +-- runnable capabilities
-    +-- defaults
-    +-- constraints
-    +-- readiness
+    +-- architecture-level defaults/constraints
     |
     v
 capability-driven browser + generic API
@@ -34,14 +33,22 @@ VideoBackendResolver
     |
     +--> isolated Wan worker
     +--> isolated LTX-2.5 Diffusers worker
-    `--> isolated LTX-2.5 ConvRot worker
+    `--> LTX-2.5 ConvRot backend
+             |
+             v
+       execution profile registry
+             |
+             +-- required assets
+             +-- required runtime surface
+             +-- profile defaults/constraints
+             `-- worker entrypoint
     |
     v
 generic storage / jobs / gallery
 ```
 
 The former monolithic Wan `backend.py` has been removed. Generic runtime,
-router, storage, job, and UI code do not dispatch on video architecture names.
+router, storage, job, UI, and setup code do not dispatch on model brands.
 
 ## Product Contract
 
@@ -50,12 +57,14 @@ Normal generation must not ask the user to choose:
 - architecture family;
 - Diffusers/reference runtime implementation;
 - quantization/loading implementation;
+- execution profile/recipe;
 - in-process/subprocess mode;
 - pipeline class names.
 
-A public capability means the **currently installed backend can execute that
-workflow**. Detection metadata may retain upstream capabilities that are not yet
-runnable, but the UI must not advertise them as working controls.
+A public capability means the installed implementation can execute that workflow
+once its runtime/recipe/assets are ready. Detection metadata may retain upstream
+capabilities that are not yet runnable, but the UI must not advertise them as
+working controls.
 
 ## Public Model Descriptor
 
@@ -79,7 +88,7 @@ The browser consumes architecture-free model payloads:
 }
 ```
 
-Architecture and backend IDs remain internal.
+Architecture, source-format, backend, and execution-profile IDs remain internal.
 
 ## Discovery and Identity
 
@@ -93,7 +102,53 @@ The UI persists:
 - canonical `repo_id` for Hugging Face cache models;
 - local filesystem path for local models.
 
-That keeps checkpoint-specific defaults and capabilities stable across reloads.
+For single-file formats, lightweight header metadata and compatible sidecar
+recipe evidence can participate in format detection. Filename hints are only
+compatibility fallbacks; a display/model brand must never select a recipe.
+
+## Checkpoint Descriptor vs. Execution Recipe
+
+`VideoModelDescriptor` describes the checkpoint itself:
+
+- architecture;
+- source/weight format;
+- capabilities;
+- architecture/checkpoint-level defaults and constraints;
+- preferred backend.
+
+It must **not** inject defaults merely because one known model using that format
+happens to recommend them.
+
+`ExecutionProfile` describes a supported runtime recipe:
+
+- compatible architecture + source format;
+- worker entrypoint;
+- required support-asset roles;
+- structural evidence used by recipe adapters;
+- required runtime node/API surface;
+- recipe-specific defaults and constraints.
+
+This distinction is important for quantized/community formats. Two checkpoints
+can share `ltx25/int8_convrot` while requiring different sampling recipes.
+DuckMotion may recognize both checkpoint formats while only one has a currently
+installed profile.
+
+If zero profiles match a recipe, the model remains blocked. If multiple profiles
+match the same structural evidence, DuckMotion refuses to guess.
+
+## Recipe Inputs
+
+A companion recipe is declarative evidence only; it is never arbitrary executable
+workflow code.
+
+Two adapters are currently supported for ConvRot:
+
+1. native `duckmotion_recipe` JSON explicitly naming an installed profile and
+   its asset roles;
+2. supported exported-workflow shapes mapped structurally to an installed
+   profile by node/model evidence.
+
+The execution profile, not the workflow file, owns the worker implementation.
 
 ## Capability-Driven Browser
 
@@ -106,10 +161,10 @@ When a model changes, the UI automatically:
 - allows text-only generation when `text_to_video` is true;
 - shows negative prompt only when supported;
 - applies model defaults;
-- applies `dimension_multiple` and frame modulo/remainder constraints;
+- applies dimension/frame constraints;
 - hides arbitrary step/guidance editing for locked sampling schedules;
 - shows audio-output capability;
-- disables models whose runtime is unavailable.
+- disables models whose runtime/recipe/assets are unavailable.
 
 No model-family generation defaults are persisted in Setup. The persisted config
 is intentionally small:
@@ -126,20 +181,24 @@ is intentionally small:
 
 ### Generic layers
 
-- `model_runtime.py`: descriptors, capabilities, backend resolver;
-- `model_discovery.py`: discovery/introspection;
+- `model_runtime.py`: checkpoint descriptors, capabilities, backend resolver;
+- `model_discovery.py`: architecture-neutral discovery/introspection;
+- `model_recipes.py`: execution-profile contracts and registry;
+- `model_asset_providers.py`: normalized support-asset provider registry;
 - `job_runtime.py`: request normalization, job lifecycle, GPU lease ownership;
 - `host_runtime.py`: WebbDuck runtime profile and GPU lease bridge only;
 - `storage_runtime.py`: config/jobs/staging/gallery;
 - `runtime_surfaces.py`: health/config/status;
-- `plugin_backend.py`: generic API composition.
+- `plugin_backend.py`: generic API composition;
+- `tools/setup.py`: generic orchestration of runtime, asset, and plugin setup.
 
-These layers must not import architecture-specific pipeline classes.
+These layers must not branch on community/vendor model names.
 
-### Isolated workers
+### Isolated runtimes/workers
 
 Architecture-specific ML packages are not installed in WebbDuck's interpreter.
-Backends launch dedicated worker interpreters selected by:
+Normal installs use deterministic runtime interpreters under
+`~/.local/share/duckmotion/runtimes/`. Advanced overrides remain available:
 
 - `DUCKMOTION_WAN_PYTHON`;
 - `DUCKMOTION_LTX_PYTHON`;
@@ -150,6 +209,24 @@ that checkout as a Python library only; it does not launch a Comfy server, expos
 Comfy's UI, or submit arbitrary workflow JSON over HTTP.
 
 Runtime requirements live under `runtime_requirements/`.
+
+## Asset Providers
+
+`tools/prepare_model_assets.py` is provider-driven. It iterates
+`model_asset_providers` and only understands a normalized contract:
+
+- discovered checkpoint/source;
+- resolved execution profile;
+- declared asset roles;
+- already-resolved paths;
+- optional trusted source URLs;
+- provider-owned asset cache.
+
+The tool itself does not contain an LTX/REDGraft branch. Future model families can
+register providers without adding another setup mode.
+
+Support assets may live anywhere under configured/inferred model roots or the
+provider cache. Special Comfy-style folder layouts are not a user requirement.
 
 ## Wan
 
@@ -195,72 +272,59 @@ The standard isolated worker follows the distilled two-stage path:
 3. full-resolution stage-2 refinement;
 4. synchronized audio/video encoding.
 
-Descriptor semantics therefore describe final output:
+Standard Diffusers descriptor defaults remain:
 
-- default 1536x1024 for the standard Diffusers runtime;
+- 1536x1024;
 - 121 frames;
 - 24 fps;
 - final dimensions divisible by 64;
-- frame count `8k+1`;
-- `generation_stages = 2`;
-- `sampling_schedule_locked = true`.
+- frame count `8k+1`.
 
-The browser hides arbitrary step/guidance editing for this locked schedule.
-
-### REDGraft LTX-2.5 INT8 ConvRot
+### LTX-2.5 INT8 ConvRot
 
 ConvRot single-file checkpoints are detected privately and routed to
 `ltx25_convrot`; the public model payload remains architecture/backend-free.
-Readiness is strict: the selected checkpoint must have a companion JSON recipe
-and all four declared support weights must resolve before generation starts:
+Format detection does **not** select a sampling recipe.
 
-- Gemma 4 12B LTX-2.5 ConvRot text encoder;
-- LTX 2.3 x2 spatial latent upscaler;
-- LTX 2.5 video VAE;
-- LTX 2.5 audio VAE.
+The current installed execution profile is:
 
-The current REDGraft contract is intentionally fixed rather than exposing
-arbitrary Comfy sampling controls:
+```text
+ltx25_convrot_two_stage_av
+```
 
-1. final defaults are 1152x768, 241 frames, 24 fps, CFG 1;
-2. stage one runs at half final width/height;
-3. I2V sources are resized to a 1536-pixel longer edge with Lanczos and passed
-   through `LTXVPreprocess(img_compression=18)`;
-4. positive text conditioning is paired with `ConditioningZeroOut(positive)`;
-5. video and audio latents are concatenated and sampled together with Euler and
-   `1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0`;
-6. after stage one, `LTXVCropGuides` prepares the stage-two conditioning/latent;
-7. video latent refinement is `LTXVLatentUpsampler` followed by bicubic
-   `LatentUpscaleBy(scale_by=0.5)`; I2V then reapplies the source guide at
-   strength 1.0 (stage-one guide strength is 0.7);
-8. video/audio latents are recombined and sampled with Euler and
-   `0.85, 0.7250, 0.4219, 0.0`;
-9. final video and audio latents are separated, decoded, and muxed to one video.
+It owns:
 
-Both VAEs are loaded through Comfy core `VAELoader`. The audio VAE is supplied to
-`LTXVEmptyLatentAudio`, matching the pinned Comfy node contract.
+- its worker entrypoint;
+- required pinned-Comfy nodes;
+- text encoder / latent upscaler / video VAE / audio VAE asset roles;
+- 1152x768 / 241-frame / 24-fps defaults;
+- the fixed two-stage AV sampling, guide, upscale, decode, and output contract.
 
-The companion JSON is treated as declarative asset/recipe evidence only. It is
-never executed as an arbitrary graph. See `docs/LTX25_CONVROT.md` for model
-layout, environment, and validation details.
+That implementation was audited from a REDGraft workflow, making REDGraft a
+reference fixture rather than a runtime identity. A future unrelated ConvRot
+checkpoint can reuse this profile or register another compatible profile.
+
+See `docs/LTX25_CONVROT.md` for the recipe/manifest/asset contract.
 
 ## Extension Rule
 
-A new video model/runtime should normally require only:
+A new video checkpoint should extend the **smallest responsible layer**:
 
-1. detection and descriptor metadata;
-2. a backend adapter;
-3. an isolated worker/runtime environment when needed;
-4. focused tests.
+- new checkpoint variant, existing runtime behavior: descriptor/detection only;
+- new recipe for an existing format/backend: add an `ExecutionProfile` and
+  worker, plus asset-provider adaptation if needed;
+- new support-asset source/layout: add/extend an asset provider;
+- genuinely new runtime family/API: add a backend + isolated runtime.
 
-It must not require a new runtime-family tab or architecture branch in generic
-router/job/storage/UI code.
+It must not require a new runtime-family tab, model-brand branch, or setup mode in
+generic router/job/storage/UI code.
 
 ## Validation Milestone
 
 Contract tests cover model discovery, public capabilities, resolver/readiness,
 generic job normalization, process isolation, memory policy, storage, the
-capability-driven UI contract, and the fixed REDGraft ConvRot recipe primitives.
+capability-driven UI contract, execution-profile ambiguity, recipe adapters,
+asset-provider iteration, and the current ConvRot two-stage AV primitives.
 
 Real-model GPU validation is still intentionally separate. Backend registration,
 asset readiness, or passing unit/contract tests must not be described as a
