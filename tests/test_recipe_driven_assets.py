@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 import ltx_convrot_assets as assets
+from model_asset_providers import model_asset_providers
+from model_recipes import ExecutionProfile, ExecutionProfileRegistry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,7 +67,7 @@ def _generic_recipe(checkpoint_name: str) -> dict:
     }
 
 
-def test_generic_convrot_checkpoint_uses_recipe_profile_not_brand_name(tmp_path: Path):
+def test_generic_convrot_checkpoint_uses_workflow_adapter_not_brand_name(tmp_path: Path):
     checkpoint_dir = tmp_path / "checkpoints" / "ltx"
     checkpoint_dir.mkdir(parents=True)
     checkpoint = checkpoint_dir / "AcmeCinemaLTX25ConvRotQ8.safetensors"
@@ -74,8 +76,6 @@ def test_generic_convrot_checkpoint_uses_recipe_profile_not_brand_name(tmp_path:
     recipe = _generic_recipe(checkpoint.name)
     (checkpoint_dir / "acme_recipe.json").write_text(json.dumps(recipe), encoding="utf-8")
 
-    # Put the four support assets anywhere under the shared model root; no Comfy
-    # category layout is required.
     for name in recipe["asset_names"].values():
         path = tmp_path / "arbitrary" / "support" / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,8 +84,67 @@ def test_generic_convrot_checkpoint_uses_recipe_profile_not_brand_name(tmp_path:
     result = assets.inspect_convrot_assets(checkpoint, models_dir=str(tmp_path))
     assert result["ready"] is True
     assert result["execution_profile"] == assets.SUPPORTED_EXECUTION_PROFILE
+    assert result["recipe_adapter"] == "workflow_adapter"
     assert result["missing"] == []
     assert all(result["assets"].values())
+
+
+def test_explicit_duckmotion_manifest_needs_no_comfy_workflow_shape(tmp_path: Path):
+    checkpoint = tmp_path / "FutureStudioLTX25ConvRot.safetensors"
+    checkpoint.touch()
+    names = {
+        "text_encoder": "future-text.safetensors",
+        "latent_upscaler": "future-upscaler.safetensors",
+        "video_vae": "future-video-vae.safetensors",
+        "audio_vae": "future-audio-vae.safetensors",
+    }
+    for name in names.values():
+        (tmp_path / name).touch()
+
+    (tmp_path / "future.recipe.json").write_text(
+        json.dumps(
+            {
+                "checkpoint": checkpoint.name,
+                "duckmotion_recipe": {
+                    "profile": assets.SUPPORTED_EXECUTION_PROFILE,
+                    "assets": {
+                        kind: {
+                            "name": name,
+                            "url": f"https://huggingface.co/example-org/example-model/resolve/main/{name}",
+                        }
+                        for kind, name in names.items()
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = assets.inspect_convrot_assets(checkpoint, models_dir=str(tmp_path))
+    assert result["ready"] is True
+    assert result["recipe_adapter"] == "duckmotion_manifest"
+    assert result["execution_profile"] == assets.SUPPORTED_EXECUTION_PROFILE
+    assert result["asset_manifest"]["text_encoder"]["url"].startswith("https://huggingface.co/")
+
+
+def test_recipe_registry_refuses_ambiguous_structural_matches():
+    registry = ExecutionProfileRegistry()
+    for profile_id in ("profile-a", "profile-b"):
+        registry.register(
+            ExecutionProfile(
+                profile_id=profile_id,
+                architecture="future-video",
+                source_format="future-format",
+                worker=f"{profile_id}.py",
+                evidence_node_types=frozenset({"NodeA", "NodeB"}),
+            )
+        )
+
+    assert registry.infer_from_node_types(
+        architecture="future-video",
+        source_format="future-format",
+        node_types={"NodeA", "NodeB", "NodeC"},
+    ) is None
 
 
 def test_recipe_declared_huggingface_urls_are_parsed_generically():
@@ -93,6 +152,14 @@ def test_recipe_declared_huggingface_urls_are_parsed_generically():
         "https://huggingface.co/example-org/example-model/resolve/main/path/to/asset.safetensors"
     ) == ("example-org/example-model", "path/to/asset.safetensors", "main")
     assert prepare_assets._hf_source("https://example.com/asset.safetensors") is None
+
+
+def test_asset_setup_iterates_provider_registry_instead_of_model_branches():
+    source = (ROOT / "tools" / "prepare_model_assets.py").read_text(encoding="utf-8")
+    assert "model_asset_providers.providers()" in source
+    assert "_prepare_ltx25_convrot" not in source
+    assert "REDGraft" not in source
+    assert "ltx25_convrot" in model_asset_providers.ids()
 
 
 def test_normal_setup_does_not_call_a_brand_specific_asset_preparer():
