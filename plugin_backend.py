@@ -14,6 +14,13 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from runtime_paths import configure_default_runtime_env
+
+# Prepared runtimes live at deterministic DuckMotion-owned paths. Advanced users
+# may still override individual interpreters with DUCKMOTION_*_PYTHON, but normal
+# installs should never need to export those variables manually.
+configure_default_runtime_env()
+
 from job_runtime import VideoJobCoordinator
 from ltx_backend import ensure_registered as ensure_ltx_registered
 from ltx_convrot_backend import ensure_registered as ensure_ltx_convrot_registered
