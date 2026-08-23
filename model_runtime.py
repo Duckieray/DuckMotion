@@ -1,7 +1,8 @@
 """Model-driven video runtime contracts for DuckMotion.
 
 DuckMotion's UI should expose models and capabilities, not engine families.
-Architecture and backend identifiers in this module are internal routing data.
+Architecture, checkpoint format and backend identifiers in this module are
+internal routing data.
 """
 
 from __future__ import annotations
@@ -84,7 +85,6 @@ def _tokens(config: Mapping[str, Any]) -> str:
 
 
 def _gguf_pair_role(path: Path) -> str | None:
-    """Return H/L when a GGUF filename uses the historical Wan pair suffix."""
     stem = path.stem
     match = re.search(r"(?i)(?:[_ .-]?)([hl])$", stem)
     return match.group(1).upper() if match else None
@@ -95,6 +95,9 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
     display_name = str(name or "").lower()
     if path.exists() and path.is_file():
         suffix = path.suffix.lower()
+        filename_tokens = " ".join(
+            part for part in (str(path).lower(), display_name, path.name.lower()) if part
+        )
         detection: dict[str, Any] = {
             "method": "local_single_file",
             "confidence": "high",
@@ -105,9 +108,9 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
             role = _gguf_pair_role(path)
             if role:
                 detection["pair_role"] = role
-        return " ".join(
-            part for part in (str(path).lower(), display_name, path.name.lower()) if part
-        ), detection
+        elif suffix == ".safetensors" and "convrot" in filename_tokens and "ltx" in filename_tokens:
+            detection["format"] = "int8_convrot"
+        return filename_tokens, detection
 
     if path.exists() and path.is_dir():
         index = _read_json(path / "model_index.json")
@@ -130,11 +133,15 @@ def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str,
                 (path / "transformer_2").exists() or index.get("transformer_2")
             ),
         }
-    return " ".join(part for part in (str(source).lower(), display_name) if part), {
+    tokens = " ".join(part for part in (str(source).lower(), display_name) if part)
+    detection = {
         "method": "source_name",
         "confidence": "medium",
         "format": "diffusers",
     }
+    if "convrot" in tokens and "ltx" in tokens and ".safetensors" in tokens:
+        detection["format"] = "int8_convrot"
+    return tokens, detection
 
 
 def detect_video_architecture(
@@ -146,6 +153,7 @@ def detect_video_architecture(
     tokens, detection = _source_tokens(str(source or ""), name=name)
 
     if "ltx-2.5" in tokens or "ltx2.5" in tokens or "ltx25" in tokens or "ltx2" in tokens:
+        variant = "convrot" if detection.get("format") == "int8_convrot" else "distilled"
         return (
             "ltx25",
             VideoCapabilities(
@@ -156,7 +164,7 @@ def detect_video_architecture(
                 negative_prompt=False,
                 source_image_required=False,
             ),
-            {**detection, "variant": "distilled"},
+            {**detection, "variant": variant},
         )
 
     if "wan" in tokens:
@@ -179,9 +187,6 @@ def detect_video_architecture(
             or "t2v" in tokens
             or "wanpipeline" in tokens
         )
-
-        # Community Wan checkpoints may explicitly advertise both workflows.
-        # Keep that as one model choice; backend/runtime details stay internal.
         if is_i2v and is_t2v and not is_ti2v:
             capabilities = VideoCapabilities(
                 text_to_video=True,
@@ -232,32 +237,44 @@ def backend_for_architecture(architecture: str | None) -> str:
     }.get((architecture or "").lower(), UNSUPPORTED_BACKEND)
 
 
-def backend_for_model(architecture: str | None, capabilities: VideoCapabilities) -> str:
+def backend_for_model(
+    architecture: str | None,
+    capabilities: VideoCapabilities,
+    detection: Mapping[str, Any] | None = None,
+) -> str:
     architecture = (architecture or "").lower()
     if architecture == "wan22" and not (
         capabilities.text_to_video or capabilities.image_to_video
     ):
         return UNSUPPORTED_BACKEND
+    if architecture == "ltx25" and str((detection or {}).get("format") or "").lower() == "int8_convrot":
+        return "ltx25_convrot"
     return backend_for_architecture(architecture)
 
 
-_IMPLEMENTED_BACKENDS = {"wan_diffusers", "ltx25_isolated"}
+_IMPLEMENTED_BACKENDS = {"wan_diffusers", "ltx25_isolated", "ltx25_convrot"}
 
 
 def backend_is_implemented(backend: str | None) -> bool:
     return (backend or "") in _IMPLEMENTED_BACKENDS
 
 
-def constraints_for_architecture(architecture: str | None) -> dict[str, Any]:
+def constraints_for_architecture(
+    architecture: str | None,
+    detection: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     architecture = (architecture or "").lower()
     if architecture == "ltx25":
-        return {
+        constraints = {
             "dimension_multiple": 64,
             "frame_count_modulo": 8,
             "frame_count_remainder": 1,
             "generation_stages": 2,
             "sampling_schedule_locked": True,
         }
+        if str((detection or {}).get("format") or "").lower() == "int8_convrot":
+            constraints["checkpoint_recipe_required"] = True
+        return constraints
     if architecture == "wan22":
         return {
             "dimension_multiple": 16,
@@ -300,6 +317,18 @@ def defaults_for_model(
     text = str(name or "").lower()
     variant = str((detection or {}).get("variant") or "").lower()
 
+    if architecture == "ltx25" and variant == "convrot":
+        defaults.update(
+            {
+                "width": 1152,
+                "height": 768,
+                "num_frames": 241,
+                "fps": 24,
+                "num_inference_steps": 8,
+                "guidance_scale": 1.0,
+            }
+        )
+
     if architecture == "wan22" and variant == "ti2v":
         defaults.update(
             {
@@ -341,10 +370,10 @@ def describe_video_model(
         name=display_name,
         source=source,
         architecture=architecture,
-        backend=backend_for_model(architecture, capabilities),
+        backend=backend_for_model(architecture, capabilities, detection),
         capabilities=capabilities,
         defaults=effective_defaults,
-        constraints=constraints_for_architecture(architecture),
+        constraints=constraints_for_architecture(architecture, detection),
         detection=detection,
     )
 
@@ -416,7 +445,6 @@ class VideoBackendResolver:
         return tuple(self._backends.keys())
 
     def unload_all(self) -> None:
-        """Release resources for every installed backend without family branching."""
         errors: list[Exception] = []
         for backend in tuple(self._backends.values()):
             try:

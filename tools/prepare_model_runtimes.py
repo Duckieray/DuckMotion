@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Create/update DuckMotion's isolated Wan and LTX runtime environments.
+"""Create/update DuckMotion's isolated model runtime environments.
 
 This installs runtime libraries only. It never downloads model weights.
-On NixOS, run it from `nix develop` (or another shell with Python/venv support).
+The LTX ConvRot runtime additionally owns a pinned Comfy core checkout used as a
+Python library by the isolated worker; it never starts a ComfyUI server.
 """
 
 from __future__ import annotations
@@ -16,9 +17,15 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COMFYUI_COMMIT = "9db05e0e1f035d1902ffc256fe7a336e549ced34"
+COMFYUI_REPO = "https://github.com/Comfy-Org/ComfyUI.git"
 RUNTIMES = {
     "wan": ("DUCKMOTION_WAN_PYTHON", ROOT / "runtime_requirements" / "wan.txt"),
     "ltx25": ("DUCKMOTION_LTX_PYTHON", ROOT / "runtime_requirements" / "ltx25.txt"),
+    "ltx25_convrot": (
+        "DUCKMOTION_LTX_CONVROT_PYTHON",
+        ROOT / "runtime_requirements" / "ltx25_convrot.txt",
+    ),
 }
 
 
@@ -32,6 +39,19 @@ def python_in_venv(root: Path) -> Path:
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
+def prepare_comfy_checkout(env_root: Path, *, dry_run: bool) -> Path:
+    comfy_root = env_root / "comfyui"
+    git_dir = comfy_root / ".git"
+    if not git_dir.exists():
+        if not dry_run:
+            comfy_root.mkdir(parents=True, exist_ok=True)
+        run(["git", "-C", str(comfy_root), "init"], dry_run=dry_run)
+        run(["git", "-C", str(comfy_root), "remote", "add", "origin", COMFYUI_REPO], dry_run=dry_run)
+    run(["git", "-C", str(comfy_root), "fetch", "--depth", "1", "origin", COMFYUI_COMMIT], dry_run=dry_run)
+    run(["git", "-C", str(comfy_root), "checkout", "--detach", "--force", "FETCH_HEAD"], dry_run=dry_run)
+    return comfy_root
+
+
 def prepare(
     runtime: str,
     *,
@@ -39,6 +59,7 @@ def prepare(
     base_python: str,
     torch_version: str,
     torchvision_version: str,
+    torchaudio_version: str,
     torch_index: str,
     dry_run: bool,
 ) -> tuple[str, Path]:
@@ -51,20 +72,28 @@ def prepare(
 
     runtime_python = str(python_path)
     run([runtime_python, "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], dry_run=dry_run)
+    torch_packages = [
+        f"torch=={torch_version}",
+        f"torchvision=={torchvision_version}",
+    ]
+    if runtime == "ltx25_convrot":
+        torch_packages.append(f"torchaudio=={torchaudio_version}")
     run(
         [
             runtime_python,
             "-m",
             "pip",
             "install",
-            f"torch=={torch_version}",
-            f"torchvision=={torchvision_version}",
+            *torch_packages,
             "--index-url",
             f"https://download.pytorch.org/whl/{torch_index}",
         ],
         dry_run=dry_run,
     )
     run([runtime_python, "-m", "pip", "install", "-r", str(requirements)], dry_run=dry_run)
+    if runtime == "ltx25_convrot":
+        comfy_root = prepare_comfy_checkout(env_root, dry_run=dry_run)
+        print(f"Pinned Comfy core: {comfy_root} @ {COMFYUI_COMMIT}")
     return env_var, python_path
 
 
@@ -80,6 +109,7 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable, help="Base Python used to create venvs.")
     parser.add_argument("--torch-version", default="2.12.1")
     parser.add_argument("--torchvision-version", default="0.27.1")
+    parser.add_argument("--torchaudio-version", default="2.12.1")
     parser.add_argument("--torch-index", default="cu130", help="PyTorch wheel channel, e.g. cu130 or cu132.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -95,6 +125,7 @@ def main() -> int:
                 base_python=args.python,
                 torch_version=args.torch_version,
                 torchvision_version=args.torchvision_version,
+                torchaudio_version=args.torchaudio_version,
                 torch_index=args.torch_index,
                 dry_run=args.dry_run,
             )

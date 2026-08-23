@@ -18,9 +18,24 @@ def test_model_matching_uses_public_name_or_source():
     items = [
         {"name": "Wan2.2 TI2V", "source": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"},
         {"name": "LTX-2.5", "source": "Lightricks/LTX-2.5-Diffusers"},
+        {
+            "name": "REDGraft LTX-2.5 ConvRot",
+            "source": "/models/REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors",
+        },
     ]
     assert smoke._find_model(items, None, ("wan2.2", "ti2v", "5b"))["source"].startswith("Wan-AI/")
-    assert smoke._find_model(items, None, ("ltx-2.5",))["source"].startswith("Lightricks/")
+    assert smoke._find_model(items, None, ("ltx-2.5",), excluded=("convrot", "redgraft"))["source"].startswith("Lightricks/")
+    assert smoke._find_model(items, None, ("convrot",))["source"].endswith(".safetensors")
+
+
+def test_standard_ltx_matching_does_not_capture_convrot():
+    items = [
+        {
+            "name": "REDGraft LTX-2.5 ConvRot",
+            "source": "/models/REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors",
+        }
+    ]
+    assert smoke._find_model(items, None, ("ltx-2.5",), excluded=("convrot", "redgraft")) is None
 
 
 def test_model_identity_prefers_public_source():
@@ -33,24 +48,36 @@ def test_heavy_rows_are_explicitly_marked():
         wan_5b_model = None
         wan_i2v_model = None
         ltx_model = None
+        ltx_convrot_model = None
 
     items = [
         {"name": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "source": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"},
         {"name": "Wan-AI/Wan2.2-I2V-A14B-Diffusers", "source": "Wan-AI/Wan2.2-I2V-A14B-Diffusers"},
         {"name": "Lightricks/LTX-2.5-Diffusers", "source": "Lightricks/LTX-2.5-Diffusers"},
+        {
+            "name": "REDGraft LTX-2.5 ConvRot",
+            "source": "/models/REDGraft-ltx25-sulphur2-int8-convrot-ComfyMCP.safetensors",
+        },
     ]
     rows = {row["row"]: row for row in smoke._rows(Args(), items, "/tmp/source.png")}
     assert rows["wan-ti2v-5b-canary"]["heavy"] is False
     assert rows["ltx25-t2v-canary"]["heavy"] is False
+    assert rows["ltx25-convrot-t2v-canary"]["heavy"] is False
+    assert rows["ltx25-convrot-i2v-canary"]["heavy"] is False
     assert rows["wan-ti2v-5b-default"]["heavy"] is True
     assert rows["wan-i2v-a14b-canary"]["heavy"] is True
     assert rows["ltx25-t2v-default"]["heavy"] is True
+    assert rows["ltx25-convrot-default"]["heavy"] is True
+    assert rows["ltx25-convrot-default"]["payload"]["width"] == 1152
+    assert rows["ltx25-convrot-default"]["payload"]["height"] == 768
+    assert rows["ltx25-convrot-default"]["payload"]["num_frames"] == 241
 
 
 def test_runner_requires_explicit_generation_and_heavy_opt_in():
     source = (ROOT / "tools" / "run_hardware_smoke.py").read_text(encoding="utf-8")
     assert 'parser.add_argument("--execute", action="store_true"' in source
     assert 'parser.add_argument("--include-heavy", action="store_true"' in source
+    assert 'parser.add_argument("--ltx-convrot-model"' in source
     assert "weights.get(\"present\") is not True" in source
     assert '"/runtime-readiness"' in source
     assert '"/engine/generate"' in source

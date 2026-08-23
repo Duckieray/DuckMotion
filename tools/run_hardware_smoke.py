@@ -87,7 +87,13 @@ def _make_source(root: Path) -> Path:
     return path
 
 
-def _find_model(items: list[dict], explicit: str | None, patterns: tuple[str, ...]) -> dict | None:
+def _find_model(
+    items: list[dict],
+    explicit: str | None,
+    patterns: tuple[str, ...],
+    *,
+    excluded: tuple[str, ...] = (),
+) -> dict | None:
     if explicit:
         target = explicit.lower()
         for item in items:
@@ -96,7 +102,7 @@ def _find_model(items: list[dict], explicit: str | None, patterns: tuple[str, ..
         return None
     for item in items:
         text = f"{item.get('name', '')} {item.get('source', '')}".lower()
-        if all(pattern in text for pattern in patterns):
+        if all(pattern in text for pattern in patterns) and not any(pattern in text for pattern in excluded):
             return item
     return None
 
@@ -160,7 +166,8 @@ def _submit(api_base: str, payload: dict, timeout: float) -> tuple[dict, float]:
 def _rows(args, items: list[dict], image_path: str | None) -> list[dict]:
     wan5 = _find_model(items, args.wan_5b_model, ("wan2.2", "ti2v", "5b"))
     wan_i2v = _find_model(items, args.wan_i2v_model, ("wan2.2", "i2v", "a14b"))
-    ltx = _find_model(items, args.ltx_model, ("ltx-2.5",))
+    ltx = _find_model(items, args.ltx_model, ("ltx-2.5",), excluded=("convrot", "redgraft"))
+    ltx_convrot = _find_model(items, getattr(args, "ltx_convrot_model", None), ("convrot",))
 
     def row(name, model, payload, *, heavy=False, optional=False):
         return {"row": name, "model": model, "payload": payload, "heavy": heavy, "optional": optional}
@@ -199,6 +206,17 @@ def _rows(args, items: list[dict], image_path: str | None) -> list[dict]:
         )
     else:
         rows.append(row("ltx25", None, {}))
+
+    if ltx_convrot:
+        rows.extend(
+            [
+                row("ltx25-convrot-t2v-canary", ltx_convrot, {"prompt": PROMPT, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+                row("ltx25-convrot-i2v-canary", ltx_convrot, {"prompt": PROMPT, "image_path": image_path, "width": 768, "height": 512, "num_frames": 33, "fps": 24, "seed": 0}),
+                row("ltx25-convrot-default", ltx_convrot, {"prompt": PROMPT, "width": 1152, "height": 768, "num_frames": 241, "fps": 24, "seed": 0}, heavy=True),
+            ]
+        )
+    else:
+        rows.append(row("ltx25-convrot", None, {}))
     return rows
 
 
@@ -206,11 +224,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run DuckMotion's hardware smoke matrix against a live WebbDuck plugin API.")
     parser.add_argument("--api-base", default="http://127.0.0.1:8010/plugins/web/duckmotion/api")
     parser.add_argument("--execute", action="store_true", help="Actually submit video jobs. Without this flag only preflight is performed.")
-    parser.add_argument("--include-heavy", action="store_true", help="Allow reference-size LTX/Wan rows and the A14B feasibility row.")
+    parser.add_argument("--include-heavy", action="store_true", help="Allow reference/default-size LTX/Wan rows and the A14B feasibility row.")
     parser.add_argument("--only", action="append", default=[], help="Run only named row(s); may be repeated.")
     parser.add_argument("--wan-5b-model", help="Override the auto-detected Wan2.2 TI2V-5B public model identity.")
     parser.add_argument("--wan-i2v-model", help="Override the auto-detected Wan2.2 I2V A14B public model identity.")
-    parser.add_argument("--ltx-model", help="Override the auto-detected LTX-2.5 public model identity.")
+    parser.add_argument("--ltx-model", help="Override the auto-detected standard LTX-2.5 public model identity.")
+    parser.add_argument("--ltx-convrot-model", help="Override the auto-detected LTX-2.5 ConvRot/REDGraft public model identity.")
     parser.add_argument("--timeout", type=float, default=14400.0)
     parser.add_argument("--report-dir", type=Path, default=Path("smoke_reports"))
     args = parser.parse_args()
@@ -279,7 +298,7 @@ def main() -> int:
                     continue
                 if spec.get("heavy") and not args.include_heavy:
                     entry["status"] = "skipped"
-                    entry["reason"] = "heavy/reference row requires --include-heavy"
+                    entry["reason"] = "heavy/reference/default row requires --include-heavy"
                     print(f"SKIPPED {spec['row']}: {entry['reason']}")
                     continue
                 if not args.execute:
