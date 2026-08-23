@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Human-friendly DuckMotion installation/model readiness report.
 
-This command does not load model weights or submit generation jobs.
+This command does not load model weights, access provenance networks, or submit
+generation jobs.
 """
 
 from __future__ import annotations
@@ -110,21 +111,29 @@ def main() -> int:
 
         source_format = str(readiness.get("source_format") or "").strip()
         profile = str(readiness.get("execution_profile") or "").strip()
+        assets = readiness.get("assets") if isinstance(readiness.get("assets"), dict) else None
         if source_format:
             print(f"      format: {source_format}")
         if profile:
             print(f"      recipe: {profile}")
         elif source_format and not ready:
-            assets = readiness.get("assets") if isinstance(readiness.get("assets"), dict) else {}
-            if assets.get("config_path"):
+            if assets and assets.get("config_path"):
                 print("      recipe: unresolved/unsupported")
             else:
                 print("      recipe: not resolved")
 
-        assets = readiness.get("assets") if isinstance(readiness.get("assets"), dict) else None
-        if assets and not assets.get("ready"):
-            for missing in assets.get("missing") or []:
-                print(f"      missing: {missing}")
+        if assets:
+            provenance = assets.get("provenance") if isinstance(assets.get("provenance"), dict) else None
+            if provenance:
+                provider = str(provenance.get("provider") or "cached")
+                source_id = str(provenance.get("source_id") or provenance.get("source_url") or "matched")
+                print(f"      provenance: {provider} ({source_id})")
+            recipe_origin = str(assets.get("recipe_origin") or "").strip()
+            if recipe_origin:
+                print(f"      recipe source: {recipe_origin}")
+            if not assets.get("ready"):
+                for missing in assets.get("missing") or []:
+                    print(f"      missing: {missing}")
 
     print("")
     if not items:
