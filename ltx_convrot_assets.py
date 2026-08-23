@@ -296,15 +296,57 @@ def _workflow_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "
     return manifest
 
 
+def _merge_profile_asset_defaults(
+    profile_id: str,
+    manifest: Mapping[str, Mapping[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Fill only missing standard declarations owned by the execution profile.
+
+    A profile default may fill an empty role, or the source/directory for the same
+    standard filename. A differently named custom recipe asset is preserved and
+    never silently replaced with the profile default.
+    """
+    profile = execution_profiles.get(profile_id)
+    result: dict[str, dict[str, str]] = {
+        kind: {
+            "name": str((manifest.get(kind) or {}).get("name") or "").strip(),
+            "url": str((manifest.get(kind) or {}).get("url") or "").strip(),
+            "directory": str((manifest.get(kind) or {}).get("directory") or "").strip(),
+        }
+        for kind in ASSET_KINDS
+    }
+    if profile is None:
+        return result
+
+    for kind in profile.required_assets:
+        current = result.setdefault(kind, {"name": "", "url": "", "directory": ""})
+        fallback = dict(profile.asset_defaults.get(kind) or {})
+        fallback_name = str(fallback.get("name") or "").strip()
+        if not current["name"] and fallback_name:
+            current.update(
+                {
+                    "name": fallback_name,
+                    "url": str(fallback.get("url") or "").strip(),
+                    "directory": str(fallback.get("directory") or "").strip(),
+                }
+            )
+            continue
+        if current["name"] and fallback_name and current["name"].lower() == fallback_name.lower():
+            if not current["url"]:
+                current["url"] = str(fallback.get("url") or "").strip()
+            if not current["directory"]:
+                current["directory"] = str(fallback.get("directory") or "").strip()
+    return result
+
+
 def extract_asset_manifest(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, dict[str, str]]:
-    """Extract required asset roles from any companion accepted by this provider."""
+    """Extract and normalize required asset roles for a supported companion."""
     profile_id = execution_profile(config)
     if not profile_id:
         return {kind: {"name": "", "url": "", "directory": ""} for kind in ASSET_KINDS}
     explicit = _explicit_asset_manifest(config, profile_id)
-    if explicit is not None:
-        return explicit
-    return _workflow_asset_manifest(config, checkpoint_name)
+    raw_manifest = explicit if explicit is not None else _workflow_asset_manifest(config, checkpoint_name)
+    return _merge_profile_asset_defaults(profile_id, raw_manifest)
 
 
 def extract_asset_names(config: Mapping[str, Any], checkpoint_name: str = "") -> dict[str, str]:
