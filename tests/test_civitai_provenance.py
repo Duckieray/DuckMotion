@@ -19,21 +19,26 @@ def test_civitai_provider_requires_exact_sha256_and_caches_json_sidecars(monkeyp
         "model": {"name": "Community Model"},
         "files": [
             {
+                "id": 10,
                 "name": "anything.safetensors",
                 "hashes": {"SHA256": sha256.upper()},
                 "downloadUrl": "https://civitai.com/api/download/models/222",
             },
             {
+                "id": 11,
                 "name": "workflow.json",
                 "type": "Other",
                 "sizeKB": 12,
                 "hashes": {},
-                "downloadUrl": "https://civitai.com/api/download/models/222?file=workflow",
+                # Deliberately stale/unpinned. The provider must canonicalize
+                # this from the version/file IDs instead of trusting it.
+                "downloadUrl": "https://civitai.com/api/download/models/222",
             },
             {
+                "id": 12,
                 "name": "preview.png",
                 "type": "Other",
-                "downloadUrl": "https://civitai.com/api/download/models/222?file=preview",
+                "downloadUrl": "https://civitai.com/api/download/models/222",
             },
         ],
     }
@@ -61,9 +66,20 @@ def test_civitai_provider_requires_exact_sha256_and_caches_json_sidecars(monkeyp
     assert len(result["recipe_paths"]) == 1
     assert Path(result["recipe_paths"][0]).name == "workflow.json"
     assert downloaded == [
-        ("https://civitai.com/api/download/models/222?file=workflow", "workflow.json")
+        ("https://civitai.com/api/download/models/222?fileId=11", "workflow.json")
     ]
     assert Path(result["metadata_path"]).exists()
+
+
+def test_civitai_file_download_url_falls_back_only_to_trusted_published_url():
+    assert civitai._file_download_url(
+        {"downloadUrl": "https://civitai.com/api/download/models/222?type=Other"},
+        None,
+    ) == "https://civitai.com/api/download/models/222?type=Other"
+    assert civitai._file_download_url(
+        {"downloadUrl": "https://example.com/workflow.json"},
+        None,
+    ) == ""
 
 
 def test_civitai_provider_rejects_hash_response_without_exact_file_match(monkeypatch, tmp_path: Path):
