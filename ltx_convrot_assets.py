@@ -1,6 +1,6 @@
 """Asset/config discovery for LTX-2.5 INT8 ConvRot checkpoints.
 
-ConvRot is an internal checkpoint format.  Public model payloads continue to expose
+ConvRot is an internal checkpoint format. Public model payloads continue to expose
 only model identity and capabilities; this module is used by discovery/readiness and
 the isolated worker to locate the model's companion recipe and support weights.
 """
@@ -14,6 +14,13 @@ from typing import Any, Iterable
 
 
 ASSET_KINDS = ("text_encoder", "latent_upscaler", "video_vae", "audio_vae")
+MODEL_CATEGORY_DIRS = {
+    "checkpoints",
+    "checkpoint",
+    "diffusion_models",
+    "diffusion-models",
+    "unet",
+}
 
 
 def is_ltx25_convrot_path(value: str | Path) -> bool:
@@ -65,7 +72,7 @@ def find_companion_config(checkpoint: str | Path) -> Path | None:
             return candidate
 
     # Civitai companion configs are often named for the recipe rather than the
-    # checkpoint.  If there is exactly one JSON beside a ConvRot checkpoint it
+    # checkpoint. If there is exactly one JSON beside a ConvRot checkpoint it
     # is still a useful deterministic candidate, but readiness validates that it
     # actually describes all required assets before execution.
     if len(candidates) == 1:
@@ -95,6 +102,24 @@ def extract_asset_names(config: dict[str, Any], checkpoint_name: str = "") -> di
     }
 
 
+def _inferred_model_root(checkpoint_path: Path) -> Path | None:
+    """Infer a shared model root from conventional checkpoint category paths.
+
+    A checkpoint such as ``models/checkpoints/ltx/model.safetensors`` must be
+    able to find sibling ``models/text_encoders`` / ``models/vae`` directories
+    during readiness, where the configured models_dir is not part of the backend
+    readiness interface. Only recognized model-category ancestors are used so we
+    do not accidentally recurse through an arbitrary filesystem parent.
+    """
+
+    for ancestor in checkpoint_path.parent.parents:
+        if ancestor.name.lower() in MODEL_CATEGORY_DIRS:
+            return ancestor.parent
+    if checkpoint_path.parent.name.lower() in MODEL_CATEGORY_DIRS:
+        return checkpoint_path.parent.parent
+    return None
+
+
 def candidate_search_roots(
     checkpoint: str | Path,
     *,
@@ -102,6 +127,9 @@ def candidate_search_roots(
 ) -> list[Path]:
     checkpoint_path = Path(checkpoint).expanduser()
     roots: list[Path] = [checkpoint_path.parent]
+    inferred_root = _inferred_model_root(checkpoint_path)
+    if inferred_root is not None and inferred_root not in roots:
+        roots.append(inferred_root)
     for raw in (
         models_dir,
         os.getenv("DUCKMOTION_MODELS_DIR"),
