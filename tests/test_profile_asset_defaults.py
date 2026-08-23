@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import ltx_convrot_assets as convrot_assets
 from model_recipes import LTX25_CONVROT_TWO_STAGE_AV
 
 
@@ -44,3 +45,37 @@ def test_profile_source_never_substitutes_a_custom_recipe_asset():
     )
     assert name == "community-special-video-vae.safetensors"
     assert url == ""
+
+
+def test_sparse_recipe_manifest_is_normalized_with_profile_defaults_for_readiness():
+    profile = LTX25_CONVROT_TWO_STAGE_AV
+    config = {
+        "duckmotion_recipe": {
+            "profile": profile.profile_id,
+            "assets": {
+                "text_encoder": {
+                    "name": profile.asset_defaults["text_encoder"]["name"],
+                }
+            },
+        }
+    }
+    manifest = convrot_assets.extract_asset_manifest(config, "UnbrandedConvRot.safetensors")
+    assert set(manifest) == set(profile.required_assets)
+    for kind in profile.required_assets:
+        assert manifest[kind]["name"] == profile.asset_defaults[kind]["name"]
+        assert manifest[kind]["url"] == profile.asset_defaults[kind]["url"]
+
+
+def test_manifest_normalization_preserves_custom_asset_identity():
+    profile = LTX25_CONVROT_TWO_STAGE_AV
+    config = {
+        "duckmotion_recipe": {
+            "profile": profile.profile_id,
+            "assets": {
+                "video_vae": {"name": "community-special-video-vae.safetensors"},
+            },
+        }
+    }
+    manifest = convrot_assets.extract_asset_manifest(config, "UnbrandedConvRot.safetensors")
+    assert manifest["video_vae"]["name"] == "community-special-video-vae.safetensors"
+    assert manifest["video_vae"]["url"] == ""
