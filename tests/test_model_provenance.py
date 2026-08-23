@@ -50,11 +50,34 @@ def test_exactly_one_provenance_provider_is_persisted_for_offline_use(monkeypatc
 
     result = provenance.prepare_checkpoint_provenance(checkpoint)
     assert result["matched"] is True
+    assert result["cached"] is False
     cached = provenance.cached_provenance(checkpoint)
     assert cached is not None
     assert cached["provider"] == "example_hash_catalog"
     assert cached["source_id"] == "example:42"
     assert provenance.cached_recipe_paths(checkpoint) == (recipe,)
+
+
+def test_materialized_recipe_provenance_skips_repeat_provider_lookup(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("DUCKMOTION_PROVENANCE_CACHE", str(tmp_path / "cache"))
+    checkpoint = tmp_path / "model.safetensors"
+    checkpoint.write_bytes(b"checkpoint")
+    recipe = tmp_path / "recipe.json"
+    recipe.write_text("{}", encoding="utf-8")
+    calls = []
+
+    def resolve(path, fingerprint, cache):
+        calls.append(fingerprint["sha256"])
+        return {"source_id": "catalog:1", "recipe_paths": [str(recipe)]}
+
+    provider = provenance.CheckpointProvenanceProvider(provider_id="catalog", resolve=resolve)
+    monkeypatch.setattr(provenance, "checkpoint_provenance_providers", _registry(provider))
+
+    first = provenance.prepare_checkpoint_provenance(checkpoint)
+    second = provenance.prepare_checkpoint_provenance(checkpoint)
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert len(calls) == 1
 
 
 def test_ambiguous_provenance_is_not_cached(monkeypatch, tmp_path: Path):
