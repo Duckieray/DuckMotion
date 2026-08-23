@@ -3,7 +3,7 @@
 This worker imports a pinned Comfy core checkout as a Python library. It does not
 start ComfyUI, expose a workflow API, or execute the checkpoint's companion JSON
 as arbitrary code. The JSON is used only to resolve the required model assets;
-execution below is DuckMotion's fixed two-stage LTX recipe.
+execution below is DuckMotion's fixed two-stage REDGraft LTX recipe.
 """
 
 from __future__ import annotations
@@ -21,6 +21,11 @@ import traceback
 HIGH_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
 LOW_SIGMAS = "0.85, 0.7250, 0.4219, 0.0"
 IMAGE_GUIDE_STRENGTH = 0.7
+UPSCALED_IMAGE_GUIDE_STRENGTH = 1.0
+IMAGE_PREPROCESS_LONG_EDGE = 1536
+IMAGE_PREPROCESS_COMPRESSION = 18
+LATENT_UPSCALE_METHOD = "bicubic"
+LATENT_UPSCALE_SCALE = 0.5
 
 
 def _snap_dimension(value: int) -> int:
@@ -73,12 +78,18 @@ def _add_asset_folder(folder_paths, category: str, path: str) -> None:
         folder_paths.add_model_folder_path(category, parent)
 
 
-def _load_image_tensor(path: str):
+def _load_image_tensor(path: str, *, longer_edge: int = IMAGE_PREPROCESS_LONG_EDGE):
     import numpy as np
     import torch
     from PIL import Image, ImageOps
 
     image = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    width, height = image.size
+    if width > height:
+        resized = (longer_edge, int(height * (longer_edge / width)))
+    else:
+        resized = (int(width * (longer_edge / height)), longer_edge)
+    image = image.resize(resized, Image.Resampling.LANCZOS)
     array = np.asarray(image).astype("float32") / 255.0
     return torch.from_numpy(array)[None, ...]
 
@@ -167,7 +178,9 @@ def _run(request: dict, output_dir: Path) -> dict:
         device="default",
     )[0]
     video_vae = _call_node(nodes, "VAELoader", vae_name=Path(assets["video_vae"]).name)[0]
-    audio_vae = _call_node(nodes, "LTXVAudioVAELoader", ckpt_name=Path(assets["audio_vae"]).name)[0]
+    # REDGraft loads both LTX VAEs through core VAELoader. The LTX audio-only
+    # loader searches the checkpoint category instead and does not match this recipe.
+    audio_vae = _call_node(nodes, "VAELoader", vae_name=Path(assets["audio_vae"]).name)[0]
     latent_upscaler = _call_node(
         nodes,
         "LatentUpscaleModelLoader",
@@ -175,15 +188,26 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
 
     positive = _call_node(nodes, "CLIPTextEncode", clip=clip, text=prompt)[0]
-    negative = _call_node(nodes, "CLIPTextEncode", clip=clip, text="")[0]
-    conditioned = _call_node(
+    # The reference graph zeroes the positive conditioning rather than encoding
+    # an empty negative prompt. This preserves the exact LTX conditioning shape.
+    negative = _call_node(nodes, "ConditioningZeroOut", conditioning=positive)[0]
+    positive, negative = _call_node(
         nodes,
         "LTXVConditioning",
         positive=positive,
         negative=negative,
         frame_rate=fps,
-    )
-    positive, negative = conditioned[0], conditioned[1]
+    )[:2]
+
+    image_tensor = None
+    if input_image:
+        image_tensor = _load_image_tensor(input_image)
+        image_tensor = _call_node(
+            nodes,
+            "LTXVPreprocess",
+            image=image_tensor,
+            img_compression=IMAGE_PREPROCESS_COMPRESSION,
+        )[0]
 
     video_latent = _call_node(
         nodes,
@@ -193,8 +217,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         length=num_frames,
         batch_size=1,
     )[0]
-    if input_image:
-        image_tensor = _load_image_tensor(input_image)
+    if image_tensor is not None:
         video_latent = _call_node(
             nodes,
             "LTXVImgToVideoInplace",
@@ -208,20 +231,17 @@ def _run(request: dict, output_dir: Path) -> dict:
     audio_latent = _call_node(
         nodes,
         "LTXVEmptyLatentAudio",
+        audio_vae=audio_vae,
         frames_number=num_frames,
         frame_rate=fps,
         batch_size=1,
     )[0]
-    concat = _call_node(
+    av_latent = _call_node(
         nodes,
         "LTXVConcatAVLatent",
         video_latent=video_latent,
         audio_latent=audio_latent,
-        model=model,
-    )
-    av_latent = concat[0]
-    if len(concat) > 1:
-        model = concat[1]
+    )[0]
 
     noise = _call_node(nodes, "RandomNoise", noise_seed=seed)[0]
     guider = _call_node(
@@ -243,11 +263,18 @@ def _run(request: dict, output_dir: Path) -> dict:
         sigmas=high_sigmas,
         latent_image=av_latent,
     )[0]
-    separated = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage1, model=model)
-    video_latent, audio_latent = separated[0], separated[1]
-    if len(separated) > 2:
-        model = separated[2]
+    video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage1)[:2]
 
+    # REDGraft crops guide frames/conditioning before the second pass. For T2V
+    # this is effectively a no-op; for I2V it removes stage-one guide frames so
+    # the high-resolution guide can be reapplied after latent upscaling.
+    stage2_positive, stage2_negative, video_latent = _call_node(
+        nodes,
+        "LTXVCropGuides",
+        positive=positive,
+        negative=negative,
+        latent=video_latent,
+    )[:3]
     video_latent = _call_node(
         nodes,
         "LTXVLatentUpsampler",
@@ -255,16 +282,30 @@ def _run(request: dict, output_dir: Path) -> dict:
         upscale_model=latent_upscaler,
         vae=video_vae,
     )[0]
-    concat2 = _call_node(
+    video_latent = _call_node(
+        nodes,
+        "LatentUpscaleBy",
+        samples=video_latent,
+        upscale_method=LATENT_UPSCALE_METHOD,
+        scale_by=LATENT_UPSCALE_SCALE,
+    )[0]
+    if image_tensor is not None:
+        video_latent = _call_node(
+            nodes,
+            "LTXVImgToVideoInplace",
+            vae=video_vae,
+            image=image_tensor,
+            latent=video_latent,
+            strength=UPSCALED_IMAGE_GUIDE_STRENGTH,
+            bypass=False,
+        )[0]
+
+    av_latent = _call_node(
         nodes,
         "LTXVConcatAVLatent",
         video_latent=video_latent,
         audio_latent=audio_latent,
-        model=model,
-    )
-    av_latent = concat2[0]
-    if len(concat2) > 1:
-        model = concat2[1]
+    )[0]
 
     low_sigmas = _call_node(nodes, "ManualSigmas", sigmas=LOW_SIGMAS)[0]
     stage2 = _call_node(
@@ -275,16 +316,15 @@ def _run(request: dict, output_dir: Path) -> dict:
             nodes,
             "CFGGuider",
             model=model,
-            positive=positive,
-            negative=negative,
+            positive=stage2_positive,
+            negative=stage2_negative,
             cfg=1.0,
         )[0],
         sampler=sampler,
         sigmas=low_sigmas,
         latent_image=av_latent,
     )[0]
-    separated2 = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage2, model=model)
-    video_latent, audio_latent = separated2[0], separated2[1]
+    video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage2)[:2]
 
     # VAE objects implement the same decode operation used by Comfy's VAEDecode
     # node. Keeping the decode local avoids depending on an output-node plugin.
@@ -338,6 +378,11 @@ def _run(request: dict, output_dir: Path) -> dict:
         "high_sigmas": HIGH_SIGMAS,
         "low_sigmas": LOW_SIGMAS,
         "image_guide_strength": IMAGE_GUIDE_STRENGTH if input_image else None,
+        "stage2_image_guide_strength": UPSCALED_IMAGE_GUIDE_STRENGTH if input_image else None,
+        "image_preprocess_long_edge": IMAGE_PREPROCESS_LONG_EDGE if input_image else None,
+        "image_preprocess_compression": IMAGE_PREPROCESS_COMPRESSION if input_image else None,
+        "latent_upscale_method": LATENT_UPSCALE_METHOD,
+        "latent_upscale_scale": LATENT_UPSCALE_SCALE,
         "runtime": {
             "device": "cuda",
             "source_format": "int8_convrot",
