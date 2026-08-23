@@ -9,6 +9,7 @@
 # are kept explicit here instead of relying on accidental transitive installs.
 comfy-kitchen==0.2.31
 comfy-aimdo==0.4.13
+comfy-angle
 torchsde
 einops
 transformers>=4.50.3,<6
