@@ -23,6 +23,10 @@ class ExecutionProfile:
     source_format: str
     worker: str
     required_assets: tuple[str, ...] = ()
+    # Trusted profile-level defaults are only used when a compatible recipe omits
+    # a standard asset declaration/source. They are execution-profile semantics,
+    # never checkpoint-brand metadata.
+    asset_defaults: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     evidence_node_types: frozenset[str] = frozenset()
     required_runtime_nodes: frozenset[str] = frozenset()
     defaults: Mapping[str, Any] = field(default_factory=dict)
@@ -41,6 +45,12 @@ class ExecutionProfileRegistry:
             raise ValueError(f"Execution profile '{profile_id}' must define a worker")
         if profile_id in self._profiles:
             raise ValueError(f"Duplicate DuckMotion execution profile: {profile_id}")
+        unknown_defaults = set(profile.asset_defaults).difference(profile.required_assets)
+        if unknown_defaults:
+            raise ValueError(
+                f"Execution profile '{profile_id}' declares defaults for unknown asset roles: "
+                + ", ".join(sorted(unknown_defaults))
+            )
         self._profiles[profile_id] = profile
 
     def get(self, profile_id: str | None) -> ExecutionProfile | None:
@@ -119,6 +129,28 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "video_vae",
         "audio_vae",
     ),
+    asset_defaults={
+        "text_encoder": {
+            "name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+            "directory": "text_encoders",
+        },
+        "latent_upscaler": {
+            "name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+            "directory": "latent_upscale_models",
+        },
+        "video_vae": {
+            "name": "ltx-2.5-video-vae-conv-bf16.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+            "directory": "vae",
+        },
+        "audio_vae": {
+            "name": "ltx-2.5-audio-vae-bf16.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors",
+            "directory": "vae",
+        },
+    },
     evidence_node_types=_LTX25_CONVROT_EVIDENCE_NODES,
     required_runtime_nodes=_LTX25_CONVROT_EVIDENCE_NODES
     | frozenset(
