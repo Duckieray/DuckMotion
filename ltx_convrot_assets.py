@@ -23,13 +23,42 @@ MODEL_CATEGORY_DIRS = {
 }
 
 
+def _safetensors_header_text(path: Path) -> str:
+    """Read only the small safetensors JSON header, never tensor payload bytes."""
+    try:
+        with path.open("rb") as handle:
+            raw_size = handle.read(8)
+            if len(raw_size) != 8:
+                return ""
+            header_size = int.from_bytes(raw_size, "little", signed=False)
+            if header_size <= 0 or header_size > 32 * 1024 * 1024:
+                return ""
+            raw_header = handle.read(header_size)
+        payload = json.loads(raw_header.decode("utf-8"))
+    except Exception:
+        return ""
+    try:
+        return json.dumps(payload, sort_keys=True).lower()
+    except Exception:
+        return str(payload).lower()
+
+
 def is_ltx25_convrot_path(value: str | Path) -> bool:
     path = Path(value).expanduser()
+    if path.suffix.lower() != ".safetensors":
+        return False
+
     name = path.name.lower()
+    ltx_name = any(marker in name for marker in ("ltx-2.5", "ltx25", "ltx2.5", "ltx"))
+    if ltx_name and ("convrot" in name or "redgraft" in name):
+        return True
+
+    if not path.exists() or not path.is_file():
+        return False
+    header = _safetensors_header_text(path)
     return (
-        path.suffix.lower() == ".safetensors"
-        and "convrot" in name
-        and ("ltx-2.5" in name or "ltx25" in name or "ltx2.5" in name or "ltx" in name)
+        "convrot" in header
+        and any(marker in f"{name}\n{header}" for marker in ("ltx", "ltxv", "redgraft"))
     )
 
 

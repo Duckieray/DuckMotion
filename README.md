@@ -1,269 +1,242 @@
 # DuckMotion
 
-DuckMotion is WebbDuck's local, model-driven video generation plugin. The user
-selects a model; DuckMotion discovers its capabilities and routes generation to
-a compatible runtime without exposing architecture or backend choices in the
-normal workflow.
+DuckMotion is WebbDuck's local, model-driven video generation plugin. Pick a
+model; DuckMotion discovers its capabilities and routes it to the right isolated
+runtime. Architecture, checkpoint format, GGUF, ConvRot, Comfy, and backend IDs
+are implementation details rather than user-facing modes.
 
-Current runnable video workflows:
+Current runnable workflows include:
 
-- Wan 2.2 pure text-to-video checkpoints through an isolated Diffusers runtime.
-- Wan 2.2 pure image-to-video checkpoints through the same isolated runtime.
-- Wan 2.2 paired GGUF transformer checkpoints through the same Wan runtime,
-  assembled with Diffusers pipeline components behind the model selection.
-- Wan 2.2 TI2V-5B text-to-video through Diffusers. The upstream checkpoint also
-  supports image-to-video, but current Diffusers does not expose that TI2V image
-  path, so DuckMotion intentionally does not advertise it yet.
-- LTX-2.5 text-to-video and image-to-video with synchronized audio through an
-  isolated two-stage Diffusers runtime.
+- Wan 2.2 text-to-video and image-to-video through an isolated Diffusers runtime;
+- Wan 2.2 paired GGUF H/L checkpoints through that same Wan runtime;
+- Wan 2.2 TI2V-5B text-to-video where current Diffusers supports it;
+- LTX-2.5 two-stage text/image-to-video with synchronized audio;
+- REDGraft-style LTX-2.5 INT8 ConvRot with synchronized audio through a pinned
+  Comfy-core library runtime (no ComfyUI server or UI).
 
-## Design Rules
+## Quick Start
 
-- The model/checkpoint is the user-facing selection.
-- Architecture, checkpoint format, and backend IDs are internal routing metadata.
-- Inputs and controls come from model capabilities, defaults, and constraints.
-- A model is only marked runnable when an installed backend owns its workflow.
-- Model runtimes are process-isolated from WebbDuck and from each other.
-- DuckMotion's host environment does not install Wan/LTX Diffusers stacks.
+The normal installation path is intentionally one command plus your shared model
+folder:
 
-See `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` and `AGENTS.md` before changing
-runtime or discovery behavior.
+```bash
+python tools/setup.py --models /path/to/models
+```
 
-## Layout
+`setup.py`:
+
+1. saves the shared model-library path;
+2. prepares DuckMotion's isolated Wan/LTX/ConvRot runtimes;
+3. uses deterministic runtime locations under
+   `~/.local/share/duckmotion/runtimes/`;
+4. automatically installs/refreshes the DuckMotion WebbDuck plugin when a
+   sibling `../WebbDuck` checkout is found;
+5. requires no `DUCKMOTION_*_PYTHON` exports.
+
+If WebbDuck lives elsewhere:
+
+```bash
+python tools/setup.py \
+  --models /path/to/models \
+  --webbduck-dir /path/to/WebbDuck
+```
+
+Then run the non-loading diagnostic:
+
+```bash
+python tools/doctor.py
+```
+
+Doctor scans the configured model root **and** the normal Hugging Face cache,
+checks the prepared isolated runtimes, and reports per-model readiness/missing
+assets without loading model weights or generating video.
+
+After that, start/restart WebbDuck and use DuckMotion normally.
+
+## Model Library
+
+DuckMotion does not require one proprietary folder layout. Point setup at the
+root of an existing shared model library. Discovery recursively recognizes:
+
+- Diffusers `model_index.json` directories;
+- Wan `.gguf` files, including H/L dual-transformer pairs;
+- supported LTX/REDGraft single-file checkpoints;
+- cached Hugging Face Diffusers snapshots from the user's ordinary HF cache.
+
+A typical shared root can therefore look like:
 
 ```text
-DuckMotion/
-|- plugin_backend.py        # model-driven FastAPI composition root
-|- model_runtime.py         # descriptors, capabilities, backend resolver
-|- model_discovery.py       # local + Hugging Face cache discovery
-|- job_runtime.py           # architecture-neutral job coordinator
-|- host_runtime.py          # WebbDuck runtime + GPU lease bridge
-|- runtime_services.py      # host/storage composition
-|- runtime_surfaces.py      # health/config/status surfaces
-|- storage_runtime.py       # config/jobs/staging/gallery persistence
-|- storage_api.py
-|- wan_backend.py           # isolated Wan adapter
-|- wan_worker.py            # Wan Diffusers + GGUF worker
-|- ltx_backend.py           # isolated LTX-2.5 adapter
-|- ltx_worker.py            # LTX-only two-stage Diffusers process
-|- runtime_requirements/
-|  |- wan.txt
-|  `- ltx25.txt
-|- ui/                      # capability-driven browser workspace
-`- tests/
+models/
+├── checkpoints/
+│   ├── wan/
+│   ├── ltx/
+│   └── ...
+├── lora/
+├── embeddings/
+└── ...
 ```
 
-The former monolithic `backend.py` has been removed.
+Wan H/L GGUF files only need to live beside each other. They appear as one
+selectable model; DuckMotion finds the mate automatically.
 
-## Installation Into WebbDuck
+REDGraft checkpoints are detected from REDGraft/ConvRot identity and lightweight
+safetensors header metadata, not from a required filename rename. Their
+companion recipe and support weights are runtime dependencies rather than
+separate user model selections. `doctor.py` reports exactly what is missing.
 
-WebbDuck discovers web plugins under:
+## Runtime Isolation
+
+DuckMotion owns three default runtime directories:
 
 ```text
-<plugins-root>/webapps/<plugin-id>/
+~/.local/share/duckmotion/runtimes/
+├── wan/
+├── ltx25/
+└── ltx25_convrot/
 ```
 
-Install by copy/symlink, or use:
+The plugin configures those interpreter paths automatically at startup. This is
+the reproducible default path for normal installs.
+
+Advanced deployments may override them with:
+
+- `DUCKMOTION_WAN_PYTHON`
+- `DUCKMOTION_LTX_PYTHON`
+- `DUCKMOTION_LTX_CONVROT_PYTHON`
+- `DUCKMOTION_RUNTIME_HOME`
+
+Those are overrides, **not installation requirements**.
+
+`tools/prepare_model_runtimes.py` remains available for targeted maintenance:
 
 ```bash
-python3 tools/install_webbduck_plugin.py --webbduck-dir /path/to/webbduck --overwrite
+python tools/prepare_model_runtimes.py wan
+python tools/prepare_model_runtimes.py ltx25
+python tools/prepare_model_runtimes.py ltx25_convrot
+python tools/prepare_model_runtimes.py all
 ```
 
-A shared user plugin root also works:
+It installs libraries/runtime code only and does not download model weights.
 
-```bash
-python3 tools/install_webbduck_plugin.py --plugins-dir ~/.webbduck/plugins --overwrite
-```
+## Wan
 
-DuckMotion's top-level `requirements.txt` intentionally contains no video model
-engine. WebbDuck supplies the plugin-host web/runtime dependencies.
+The isolated Wan runtime supports ordinary Diffusers model layouts and hybrid
+Diffusers + local GGUF transformers.
 
-## Isolated Runtime Environments
+For dual-transformer Wan2.2 GGUF checkpoints, names ending in `H.gguf` /
+`L.gguf` are grouped as one model. DuckMotion loads both local denoisers with
+`WanTransformer3DModel.from_single_file()` + `GGUFQuantizationConfig` and uses
+normal Wan Diffusers components for scheduler/VAE/text encoding.
 
-### Wan
+The default component sources are selected from the requested workflow.
+Advanced deployments can override them with:
 
-Create a dedicated Python environment using:
+- `DUCKMOTION_WAN_GGUF_T2V_BASE`
+- `DUCKMOTION_WAN_GGUF_I2V_BASE`
 
-```bash
-pip install -r runtime_requirements/wan.txt
-```
+On lower-VRAM GPUs the runtime uses backend-owned offloading without exposing a
+memory/backend selector in the normal UI.
 
-Install the PyTorch build appropriate for the host CUDA stack, then point
-DuckMotion at that interpreter:
+## LTX-2.5
 
-```bash
-export DUCKMOTION_WAN_PYTHON=/path/to/wan-env/bin/python
-```
+The standard LTX runtime follows the distilled two-stage path:
 
-The Wan runtime supports both normal Diffusers model layouts and the historical
-hybrid Diffusers + GGUF path.
+1. stage-one diffusion at half final resolution;
+2. latent spatial upsampling;
+3. short full-resolution refinement;
+4. synchronized audio/video output.
 
-- Pure T2V checkpoints run through `WanPipeline`.
-- Pure I2V checkpoints run through `WanImageToVideoPipeline` and require a
-  source image.
-- Local `.gguf` transformer files are discovered as models. For Wan2.2 A14B
-  high/low denoiser pairs, names ending in `H.gguf` / `L.gguf` (including
-  `_H.gguf` / `_L.gguf`) are grouped into one selectable checkpoint. DuckMotion
-  loads both with `WanTransformer3DModel.from_single_file()` and
-  `GGUFQuantizationConfig`, then injects them as `transformer` and
-  `transformer_2` into the normal Wan pipeline. The UI never asks the user to
-  choose a GGUF backend.
-- The Diffusers base repo supplies scheduler/VAE/text-encoder/config components
-  for GGUF models. DuckMotion selects the normal Wan2.2 A14B T2V or I2V base
-  from the requested operation. Advanced deployments can override those
-  component sources with `DUCKMOTION_WAN_GGUF_T2V_BASE` and
-  `DUCKMOTION_WAN_GGUF_I2V_BASE`.
-- `Wan-AI/Wan2.2-TI2V-5B-Diffusers` is recognized as a TI2V checkpoint, but the
-  current Diffusers integration exposes its text-conditioned path only. Its
-  descriptor records that upstream I2V capability internally while keeping the
-  public/runnable `image_to_video` capability false until a runtime actually
-  implements it.
+Final dimensions are normalized to multiples of 64 and frame counts to `8k+1`.
+The sampling schedule is checkpoint-owned rather than a generic arbitrary-step
+UI mode.
 
-On a 16 GB GPU, automatic memory policy prefers group offloading and falls back
-to sequential CPU offload when necessary. Very large local checkpoints can use
-Diffusers disk-backed group offload when host RAM is insufficient. GGUF reduces
-transformer memory/storage pressure but still depends on the base pipeline
-components and does not make every generation cheap.
+## REDGraft LTX-2.5 INT8 ConvRot
 
-### LTX-2.5
+ConvRot has a separate isolated runtime because it needs activation rotation and
+a pinned Comfy-core implementation. DuckMotion imports that pinned core as a
+Python library only. It does not start ComfyUI, expose its UI/server, call its
+HTTP API, or execute arbitrary workflow JSON.
 
-Create a separate environment using:
+The companion JSON is treated as declarative recipe/asset evidence. The worker
+executes DuckMotion's fixed audited two-stage REDGraft recipe. See
+`docs/LTX25_CONVROT.md` for the exact sampling, AV latent, guide, upscale, decode,
+and output contract.
 
-```bash
-pip install -r runtime_requirements/ltx25.txt
-```
+## Configuration
 
-Then set:
-
-```bash
-export DUCKMOTION_LTX_PYTHON=/path/to/ltx-env/bin/python
-```
-
-LTX-2.5 currently tracks Diffusers main because its APIs have not yet landed in
-a stable Diffusers release.
-
-DuckMotion uses the reference distilled two-stage path:
-
-1. diffusion at half the requested final resolution;
-2. 2x latent spatial upsampling;
-3. short full-resolution refinement using the stage-2 distilled sigma schedule;
-4. synchronized audio/video encoding.
-
-The selected width and height describe the final output. Final dimensions are
-therefore normalized to multiples of 64, and frame counts use the LTX `8k+1`
-constraint. On a 16 GB GPU, the Diffusers worker defaults to sequential CPU
-offload.
-
-## Model Discovery
-
-DuckMotion searches architecture-neutral model roots plus the normal Hugging
-Face cache. A model does not need to be copied into a DuckMotion-specific
-folder. Local discovery includes recognized Diffusers `model_index.json`
-directories and Wan `.gguf` transformer files. Paired H/L GGUF files appear as
-one model entry rather than two backend choices.
-
-Relevant environment variables include:
-
-- `WEBBDUCK_MODELS_DIR`
-- `WEBBDUCK_HF_CACHE_DIR`
-- `HF_HUB_CACHE`
-- `HUGGINGFACE_HUB_CACHE`
-- `HF_HOME`
-- `DUCKMOTION_MODELS_DIR`
-
-The persisted user configuration contains only:
+Normal persisted user configuration is deliberately small:
 
 - `model_id_or_path`
 - `models_dir`
 - `output_dir`
 
-There is no persisted architecture/backend/format selector. Hugging Face cache
-selections persist the canonical repository ID. Local Diffusers models and
-local GGUF models persist their local source path.
+There is no persisted architecture, backend, GGUF, ConvRot, Comfy, or runtime
+selector.
 
-## Capability-Driven UI
-
-The browser workspace consumes the same public model descriptors as the API.
-It does not choose a runtime family or checkpoint format.
-
-When the selected model changes, the UI automatically:
-
-- shows or hides source-image staging from `image_to_video`;
-- requires a source image only when `source_image_required` is true;
-- permits text-only generation when `text_to_video` is true;
-- shows negative prompt only when supported;
-- applies checkpoint defaults for dimensions, frames, FPS, steps, and guidance;
-- applies dimension and frame-count constraints from the descriptor;
-- hides arbitrary step/guidance editing when the checkpoint reports a locked
-  sampling schedule;
-- shows synchronized-audio capability in the model profile;
-- disables discovered models whose runtime is unavailable.
-
-Setup no longer stores model-family generation defaults. Those values belong to
-the model descriptor and generation request.
-
-## Runtime Environment Variables
-
-Generic:
+Useful generic advanced environment overrides include:
 
 - `DUCKMOTION_MODEL_ID_OR_PATH`
 - `DUCKMOTION_MODELS_DIR`
 - `DUCKMOTION_OUTPUT_DIR`
+- `WEBBDUCK_HF_CACHE_DIR`
+- `HF_HUB_CACHE`
+- `HUGGINGFACE_HUB_CACHE`
+- `HF_HOME`
 
-Wan runtime:
+## Capability-Driven UI
 
-- `DUCKMOTION_WAN_PYTHON`
-- `DUCKMOTION_WAN_TIMEOUT_SECONDS`
-- `DUCKMOTION_WAN_OFFLOAD` (`auto`, `group`, `sequential`, `model`, `none`)
-- `DUCKMOTION_WAN_GGUF_T2V_BASE` (optional advanced component-source override)
-- `DUCKMOTION_WAN_GGUF_I2V_BASE` (optional advanced component-source override)
+The DuckMotion browser consumes public model capabilities/defaults/constraints.
+It automatically:
 
-LTX runtime:
+- permits T2V only when supported;
+- shows source-image staging only for I2V-capable models;
+- requires an image only when the selected checkpoint requires one;
+- shows negative prompts only when supported;
+- applies model-specific dimensions/frames/FPS/steps/guidance;
+- applies dimension/frame constraints;
+- hides arbitrary sampling controls for locked schedules;
+- reports synchronized-audio capability;
+- disables discovered models that are not runnable.
 
-- `DUCKMOTION_LTX_PYTHON`
-- `DUCKMOTION_LTX_TIMEOUT_SECONDS`
-- `DUCKMOTION_LTX_OFFLOAD` (`auto`, `sequential`, `model`, `none`)
+Users select checkpoints, not engines.
 
-DuckMotion reuses WebbDuck's runtime-profile and GPU-lease services through the
-architecture-neutral `host_runtime.py` bridge. The actual model code executes
-in child processes, so worker exit releases model resources.
+## Architecture Rules
 
-## Current Model Defaults
+- Model/checkpoint identity is the user-facing routing key.
+- Architecture, format, and backend IDs stay private.
+- Generic API/job/storage/UI code must not branch on model families.
+- Backend-specific dependencies live in isolated workers.
+- A model is marked runnable only when an installed backend implements its
+  advertised workflow.
+- Adding another model/runtime should extend discovery + a backend adapter, not
+  add another application mode.
 
-Defaults are properties of the detected model, not UI engine presets.
+See `AGENTS.md` and `docs/MODEL_DRIVEN_VIDEO_ARCHITECTURE.md` before changing
+runtime/discovery behavior.
 
-Generic Wan 2.2 defaults currently exposed by the descriptor are 832x480,
-81 frames, 16 fps, 30 steps, and guidance 5.0. The published TI2V-5B variant is
-checkpoint-specific: 1280x704 landscape, 121 frames, 24 fps, 50 steps, and
-guidance 5.0. Checkpoints identified as Turbo receive their fast checkpoint
-defaults rather than changing the application mode.
+## Development / Validation
 
-LTX-2.5 defaults describe the final output: 1536x1024, 121 frames, 24 fps, with
-the distilled two-stage schedule and guidance 1.0. Its sampling schedule is
-locked to the checkpoint's explicit distilled sigma values rather than being a
-generic arbitrary-step workflow.
+Hardware validation is intentionally API-driven and separate from setup:
 
-## API Surface
+```bash
+python tools/run_hardware_smoke.py
+```
 
-The plugin exposes model-driven routes for:
+The default is preflight only. Actual generation requires explicit `--execute`;
+heavy/reference rows additionally require `--include-heavy`.
 
-- model discovery
-- config
-- health/runtime status
-- generation/jobs/cancellation
-- staging
-- gallery
-- recent WebbDuck images
+See `docs/HARDWARE_SMOKE_MATRIX.md` for the current Wan, GGUF, standard LTX, and
+REDGraft ConvRot validation matrix.
 
-Public model payloads expose capabilities, defaults, constraints, and readiness.
-They do not require clients to understand architecture/backend IDs or GGUF.
+## Plugin Packaging
 
-## Development Status
+For manual/advanced plugin installation, the lower-level installer remains:
 
-The runtime architecture and browser UI are model-driven. Real hardware smoke
-validation must cover the restored Wan GGUF path alongside normal Wan Diffusers
-and LTX-2.5 before the video migration is considered regression-clean.
+```bash
+python tools/install_webbduck_plugin.py \
+  --webbduck-dir /path/to/WebbDuck \
+  --overwrite
+```
 
-No full cross-model GPU validation should be inferred from the presence of a
-backend. The planned smoke matrix covers Wan Diffusers, Wan GGUF and LTX-2.5
-alongside WebbDuck's SDXL, FLUX, Krea, and Qwen image backends.
+Normal users should prefer `tools/setup.py`, which invokes it automatically when
+possible.
