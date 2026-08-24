@@ -1,15 +1,14 @@
-"""Quality-oriented I2V reference-stability policy for LTX-2.5 ConvRot.
+"""Quality-oriented I2V stability policy for LTX-2.5 ConvRot.
 
-The execution recipe remains checkpoint/companion owned.  This module layers an
+The execution recipe remains checkpoint/companion owned. This module layers an
 explicit user-facing stability choice on top of those values without making a
 checkpoint brand part of runtime behavior.
 
-``model`` preserves the companion's guide strengths/noise policy while using the
-current LTXVAddGuide reference-conditioning path.
-``identity`` strengthens the first-frame reference in both stages and reuses the
-same stage-two seed to reduce high-resolution identity re-interpretation.
-``locked`` adds the same source image as a final-frame reference as well.  It is
-intended for tripod/locked-composition shots with small subject motion.
+``model`` preserves the companion's native first-frame Inplace strengths/noise
+policy. ``identity`` keeps that native topology but strengthens both Inplace
+passes and reuses the same stage-two seed. ``locked`` additionally opts into the
+advanced LTXVAddGuide first/last reference path for intentional interpolation
+between appearance anchors.
 """
 
 from __future__ import annotations
@@ -84,12 +83,7 @@ def apply_i2v_stability(
 
 
 def guide_plan(mode: Any, strength: Any) -> tuple[dict[str, Any], ...]:
-    """Return the reference frames to add for one sampling stage.
-
-    A locked shot uses the same source image as both first and last references.
-    LTXVAddGuide keeps those references outside the generated timeline and marks
-    their intended temporal positions through keyframe attention metadata.
-    """
+    """Return reference tokens for the explicit AddGuide/locked-shot path."""
 
     normalized = normalize_i2v_stability(mode)
     first_strength = _bounded_strength(strength)
