@@ -164,8 +164,19 @@
                   <label class="label" for="gen-seed">Seed</label>
                   <input id="gen-seed" class="input" type="number" step="1" placeholder="Random" />
                 </div>
+                <div id="i2v-stability-group" class="hidden">
+                  <label class="label" for="i2v-stability">Reference stability</label>
+                  <select id="i2v-stability" class="input">
+                    <option value="model">Model default</option>
+                    <option value="identity">Identity stable</option>
+                    <option value="locked">Locked shot</option>
+                  </select>
+                </div>
               </div>
 
+              <div id="i2v-stability-hint" class="callout muted hidden">
+                Model default preserves checkpoint tuning. Identity stable strengthens the source reference during refinement. Locked shot also anchors the final frame to the same source image for low-motion tripod shots.
+              </div>
               <div id="sampling-note" class="callout muted hidden"></div>
               <div id="constraint-summary" class="hint-inline"></div>
 
