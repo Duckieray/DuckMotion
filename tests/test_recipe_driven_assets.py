@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import ltx_convrot_assets as assets
+from ltx_convrot_recipe import extract_execution_recipe
 from model_asset_providers import model_asset_providers
 from model_recipes import (
     ExecutionProfile,
@@ -64,13 +65,13 @@ def _generic_recipe(checkpoint_name: str) -> dict:
             {"type": "VAELoader", "widgets_values": [names["audio_vae"]]},
         ]
     )
-    # Exported-workflow inference must prove both the node surface and the
-    # distinctive semantics of this execution profile.
+    # The graph topology identifies the installed execution profile. Sampler,
+    # sigmas and other checkpoint-author tuning are normalized independently and
+    # no longer participate in profile identity.
     return {
         "checkpoint": checkpoint_name,
         "nodes": nodes,
         "asset_names": names,
-        "recipe_signature": sorted(LTX25_CONVROT_TWO_STAGE_AV.evidence_literals),
     }
 
 
@@ -96,10 +97,20 @@ def test_generic_convrot_checkpoint_uses_workflow_adapter_not_brand_name(tmp_pat
     assert all(result["assets"].values())
 
 
-def test_same_node_surface_with_different_recipe_semantics_does_not_match_profile():
+def test_same_topology_with_different_sampling_tuning_still_matches_profile():
     recipe = _generic_recipe("AcmeCinemaLTX25ConvRotQ8.safetensors")
-    recipe["recipe_signature"] = ["euler", "bicubic", "different sigma schedule"]
-    assert assets.execution_profile(recipe) is None
+    recipe["nodes"].extend(
+        [
+            {"type": "KSamplerSelect", "widgets_values": ["Euler a"]},
+            {"type": "ManualSigmas", "widgets_values": ["1.0, 0.97, 0.5, 0.0"]},
+            {"type": "ManualSigmas", "widgets_values": ["0.8, 0.3, 0.0"]},
+        ]
+    )
+    assert assets.execution_profile(recipe) == LTX25_CONVROT_TWO_STAGE_AV.profile_id
+    normalized = extract_execution_recipe(recipe)
+    assert normalized["sampler"] == "euler_ancestral"
+    assert normalized["stage1_sigmas"] == "1.0, 0.97, 0.5, 0.0"
+    assert normalized["stage2_sigmas"] == "0.8, 0.3, 0.0"
 
 
 def test_explicit_duckmotion_manifest_needs_no_comfy_workflow_shape(tmp_path: Path):
