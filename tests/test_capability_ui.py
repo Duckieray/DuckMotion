@@ -45,6 +45,8 @@ def test_create_view_is_driven_by_public_capabilities_and_constraints():
     assert "frame_count_modulo" in APP
     assert "frame_count_remainder" in APP
     assert "sampling_schedule_locked" in APP
+    assert "steps_locked" in APP
+    assert "guidance_locked" in APP
 
 
 def test_i2v_stability_control_is_capability_driven_not_model_named():
@@ -55,6 +57,30 @@ def test_i2v_stability_control_is_capability_driven_not_model_named():
     assert "Reference stability" in INDEX
     assert "Identity stable" in INDEX
     assert "Locked shot" in INDEX
+
+
+def test_duration_and_quality_presets_are_restored_without_model_dispatch():
+    assert 'id="preset-seconds"' in INDEX
+    assert 'id="preset-quality"' in INDEX
+    assert 'id="apply-generate-preset"' in INDEX
+    assert "Preview" in INDEX
+    assert "Balanced" in INDEX
+    assert "High" in INDEX
+    assert "frameCountForDuration" in APP
+    assert "frame_count_modulo" in APP
+    assert "frame_count_remainder" in APP
+    assert "Math.round(safeSeconds * safeFps) + 1" in APP
+    assert 'byId("preset-seconds")?.addEventListener("input", syncDurationToFrames)' in APP
+    assert 'byId("gen-fps")?.addEventListener("input", syncDurationToFrames)' in APP
+
+
+def test_locked_steps_do_not_implicitly_hide_or_drop_guidance():
+    assert 'setHidden("gen-steps-group", lockedSteps)' in APP
+    assert 'setHidden("gen-guidance-group", lockedGuidance)' in APP
+    assert "if (!stepsLocked(constraints))" in APP
+    assert "if (!guidanceLocked(constraints))" in APP
+    assert "payload.guidance_scale" in APP
+    assert "Guidance remains adjustable." in APP
 
 
 def test_hf_cache_selection_persists_canonical_repo_identity():
