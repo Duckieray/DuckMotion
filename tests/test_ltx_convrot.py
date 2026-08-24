@@ -23,6 +23,7 @@ from ltx_convrot_worker import (
     VIDEO_DECODE_TILE_SIZE,
     VIDEO_OUTPUT_CRF,
     _call_node,
+    _effective_recipe,
     _snap_dimension,
     _snap_frames,
     _stage2_seed,
@@ -31,10 +32,10 @@ from model_recipes import LTX25_CONVROT_TWO_STAGE_AV
 from model_runtime import describe_video_model
 
 
-def test_two_stage_av_profile_constants_are_locked():
+def test_two_stage_av_profile_quality_defaults():
     assert HIGH_SIGMAS == "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
     assert LOW_SIGMAS == "0.85, 0.7250, 0.4219, 0.0"
-    assert IMAGE_GUIDE_STRENGTH == 0.7
+    assert IMAGE_GUIDE_STRENGTH == 1.0
     assert UPSCALED_IMAGE_GUIDE_STRENGTH == 1.0
     assert IMAGE_PREPROCESS_LONG_EDGE == 1536
     assert IMAGE_PREPROCESS_COMPRESSION == 18
@@ -51,12 +52,17 @@ def test_two_stage_av_profile_constants_are_locked():
     assert LTX25_CONVROT_TWO_STAGE_AV.defaults["width"] == 1152
     assert LTX25_CONVROT_TWO_STAGE_AV.defaults["height"] == 768
     assert LTX25_CONVROT_TWO_STAGE_AV.defaults["num_frames"] == 241
+    assert LTX25_CONVROT_TWO_STAGE_AV.defaults["num_inference_steps"] == 11
+    assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["video_vae"]["name"] == "ltx-2.5-video-vae-bf16.safetensors"
+    assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["latent_upscaler"]["name"] == "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
 
 
-def test_stage_two_uses_a_distinct_reproducible_noise_seed():
+def test_stage_two_seed_policy_can_preserve_or_increment_seed():
     assert _stage2_seed(0) == 1
     assert _stage2_seed(1234) == 1235
     assert _stage2_seed(UINT64_MASK) == 0
+    assert _effective_recipe({"execution_recipe": {"stage2_noise_policy": "same_seed"}})["stage2_noise_policy"] == "same_seed"
+    assert _effective_recipe({"execution_recipe": {"stage2_noise_policy": "increment"}})["stage2_noise_policy"] == "increment"
 
 
 def test_call_node_supports_classic_and_modern_execute_contracts():
@@ -88,7 +94,7 @@ def test_call_node_supports_classic_and_modern_execute_contracts():
     assert _call_node(nodes, "InstanceModern", value=4, ignored="filtered") == (12,)
 
 
-def test_worker_source_keeps_two_stage_av_order():
+def test_worker_source_keeps_two_stage_av_order_and_uses_effective_recipe():
     import ltx_convrot_worker
 
     source = inspect.getsource(ltx_convrot_worker._run)
@@ -100,7 +106,12 @@ def test_worker_source_keeps_two_stage_av_order():
     assert source.index('"LTXVLatentUpsampler"') < source.index('"LatentUpscaleBy"')
     assert "positive=stage2_positive" in source
     assert "negative=stage2_negative" in source
-    assert "strength=UPSCALED_IMAGE_GUIDE_STRENGTH" in source
+    assert 'strength=recipe["image_guide_strength"]' in source
+    assert 'strength=recipe["upscaled_image_guide_strength"]' in source
+    assert 'sampler_name=recipe["sampler"]' in source
+    assert 'sigmas=recipe["stage1_sigmas"]' in source
+    assert 'sigmas=recipe["stage2_sigmas"]' in source
+    assert 'cfg=recipe["cfg"]' in source
     assert "noise_seed=stage2_seed" in source
     assert source.index('"LTXVSeparateAVLatent", av_latent=stage2') < source.index('"VAEDecodeTiled"')
     assert "tile_size=VIDEO_DECODE_TILE_SIZE" in source
