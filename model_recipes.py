@@ -167,7 +167,10 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         {
             "LTXVPreprocess",
             "EmptyLTXVLatentVideo",
-            "LTXVImgToVideoInplace",
+            # Current LTX-2.5 I2V uses reference/keyframe attention rather than
+            # only replacing the first latent frames. This is also the primitive
+            # used by Comfy's first/last-frame workflow.
+            "LTXVAddGuide",
             "RandomNoise",
             "CFGGuider",
             "KSamplerSelect",
@@ -191,6 +194,10 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "frame_count_remainder": 1,
         "generation_stages": 2,
         "sampling_schedule_locked": True,
+        # Generic public I2V stability choices. The browser never branches on
+        # architecture/model name; a profile advertises this optional surface.
+        "i2v_stability_modes": ["model", "identity", "locked"],
+        "i2v_stability_default": "model",
     },
 )
 execution_profiles.register(LTX25_CONVROT_TWO_STAGE_AV)
