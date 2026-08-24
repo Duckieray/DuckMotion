@@ -56,6 +56,9 @@ def test_two_stage_av_profile_quality_defaults():
     assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["video_vae"]["name"] == "ltx-2.5-video-vae-bf16.safetensors"
     assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["latent_upscaler"]["name"] == "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
     assert LTX25_CONVROT_TWO_STAGE_AV.constraints["i2v_stability_modes"] == ["model", "identity", "locked"]
+    assert LTX25_CONVROT_TWO_STAGE_AV.constraints["sampling_schedule_locked"] is True
+    assert LTX25_CONVROT_TWO_STAGE_AV.constraints["steps_locked"] is True
+    assert LTX25_CONVROT_TWO_STAGE_AV.constraints["guidance_locked"] is False
 
 
 def test_stage_two_seed_policy_can_preserve_or_increment_seed():
@@ -64,6 +67,18 @@ def test_stage_two_seed_policy_can_preserve_or_increment_seed():
     assert _stage2_seed(UINT64_MASK) == 0
     assert _effective_recipe({"execution_recipe": {"stage2_noise_policy": "same_seed"}})["stage2_noise_policy"] == "same_seed"
     assert _effective_recipe({"execution_recipe": {"stage2_noise_policy": "increment"}})["stage2_noise_policy"] == "increment"
+
+
+def test_user_guidance_overrides_companion_cfg_without_unlocking_steps():
+    recipe = _effective_recipe(
+        {
+            "execution_recipe": {"cfg": 1.0, "origin": "workflow_adapter"},
+            "guidance_scale": 1.35,
+        }
+    )
+    assert recipe["cfg"] == 1.35
+    assert recipe["origin"] == "workflow_adapter+user_guidance"
+    assert _effective_recipe({"execution_recipe": {"cfg": 1.0}})["cfg"] == 1.0
 
 
 def test_call_node_supports_classic_and_modern_execute_contracts():
@@ -118,6 +133,7 @@ def test_worker_source_keeps_two_stage_av_order_and_uses_reference_attention():
     assert 'cfg=recipe["cfg"]' in source
     assert "noise_seed=stage2_seed" in source
     assert '"companion_execution_recipe": source_recipe' in source
+    assert '"user_guidance_scale": request.get("guidance_scale")' in source
     assert '"reference_conditioning": "LTXVAddGuide"' in source
     assert source.index('"LTXVSeparateAVLatent", av_latent=stage2') < source.index('"VAEDecodeTiled"')
     assert "tile_size=VIDEO_DECODE_TILE_SIZE" in source
@@ -146,6 +162,12 @@ def test_runtime_probe_uses_selected_profile_node_surface():
     ):
         assert node_name in LTX25_CONVROT_TWO_STAGE_AV.required_runtime_nodes
     assert "LTXVImgToVideoInplace" not in LTX25_CONVROT_TWO_STAGE_AV.required_runtime_nodes
+
+
+def test_backend_passes_guidance_to_isolated_worker_payload():
+    source = inspect.getsource(LTX25ConvRotBackend.generate)
+    assert '"guidance_scale": (' in source
+    assert 'float(request["guidance_scale"])' in source
 
 
 def test_declarative_recipe_resolves_assets_without_brand_or_special_layout(tmp_path: Path):
