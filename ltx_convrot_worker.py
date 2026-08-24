@@ -78,8 +78,13 @@ def _effective_recipe(request: dict) -> dict:
     sampler = normalize_sampler_name(raw.get("sampler")) or DEFAULT_SAMPLER
     stage1_sigmas = str(raw.get("stage1_sigmas") or DEFAULT_STAGE1_SIGMAS).strip()
     stage2_sigmas = str(raw.get("stage2_sigmas") or DEFAULT_STAGE2_SIGMAS).strip()
+    cfg_source = (
+        request.get("guidance_scale")
+        if request.get("guidance_scale") is not None
+        else raw.get("cfg", DEFAULT_CFG)
+    )
     try:
-        cfg = float(raw.get("cfg", DEFAULT_CFG))
+        cfg = float(cfg_source)
     except (TypeError, ValueError):
         cfg = DEFAULT_CFG
     if not 0.0 <= cfg <= 20.0:
@@ -98,6 +103,10 @@ def _effective_recipe(request: dict) -> dict:
     if stage2_noise_policy not in {"increment", "same_seed"}:
         stage2_noise_policy = DEFAULT_STAGE2_NOISE_POLICY
 
+    origin = str(raw.get("origin") or "profile_default")
+    if request.get("guidance_scale") is not None:
+        origin = f"{origin}+user_guidance"
+
     return {
         "sampler": sampler,
         "stage1_sigmas": stage1_sigmas,
@@ -111,7 +120,7 @@ def _effective_recipe(request: dict) -> dict:
             DEFAULT_UPSCALED_IMAGE_GUIDE_STRENGTH,
         ),
         "stage2_noise_policy": stage2_noise_policy,
-        "origin": str(raw.get("origin") or "profile_default"),
+        "origin": origin,
     }
 
 
@@ -554,6 +563,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "execution_profile": EXECUTION_PROFILE_ID,
         "companion_execution_recipe": source_recipe,
         "execution_recipe": recipe,
+        "user_guidance_scale": request.get("guidance_scale"),
         "i2v_stability_mode": stability_mode if input_image else None,
         "i2v_stability_overrides": stability_overrides if input_image else {},
         "reference_conditioning": "LTXVAddGuide" if input_image else None,
