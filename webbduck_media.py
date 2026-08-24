@@ -10,6 +10,12 @@ from server.storage import BASE, to_web_path
 from storage_runtime import DEFAULT_OUTPUT_DIR, STAGING_DIR, SUPPORTED_IMAGE_SUFFIXES
 
 
+def _root_web_path(path: Path) -> str:
+    """Return a host-root URL that is safe from DuckMotion's nested plugin UI."""
+
+    return "/" + str(to_web_path(path)).lstrip("/")
+
+
 def recent_webbduck_images(limit: int = 24) -> list[dict[str, Any]]:
     try:
         runs = [
@@ -35,7 +41,7 @@ def recent_webbduck_images(limit: int = 24) -> list[dict[str, Any]]:
                 continue
             try:
                 stat = image.stat()
-                web_path = str(to_web_path(image))
+                web_path = _root_web_path(image)
             except Exception:
                 continue
             out.append(
