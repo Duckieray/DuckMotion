@@ -16,6 +16,7 @@ from ltx_convrot_assets import (
     inspect_convrot_assets,
     is_ltx25_convrot_path,
 )
+from ltx_convrot_quality import apply_quality_asset_policy
 
 
 DiscoverFn = Callable[[Path], list[Path]]
@@ -63,13 +64,19 @@ def _discover_ltx25_convrot(models_dir: Path) -> list[Path]:
     return [path for path in candidates if is_ltx25_convrot_path(path)]
 
 
+def _inspect_ltx25_convrot(checkpoint: Path, **kwargs: Any) -> dict[str, Any]:
+    models_dir = str(kwargs.get("models_dir") or "") or None
+    state = inspect_convrot_assets(checkpoint, models_dir=models_dir)
+    return apply_quality_asset_policy(state, checkpoint, models_dir=models_dir)
+
+
 model_asset_providers.register(
     ModelAssetProvider(
         provider_id="ltx25_convrot",
         label="LTX-2.5 ConvRot",
         runtime_id="ltx25_convrot",
         discover=_discover_ltx25_convrot,
-        inspect=inspect_convrot_assets,
+        inspect=_inspect_ltx25_convrot,
         cache_root=convrot_asset_cache_root,
     )
 )
