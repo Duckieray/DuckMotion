@@ -165,6 +165,9 @@ class GeneratePayload(BaseModel):
     num_inference_steps: int | None = None
     guidance_scale: float | None = None
     seed: int | None = None
+    # Optional generic I2V quality hint. Backends that advertise support through
+    # public constraints may interpret model/identity/locked; others can ignore it.
+    i2v_stability: str | None = None
 
 
 def get_router(plugin_manifest: dict | None = None) -> APIRouter:
