@@ -127,7 +127,7 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
     profile_id="ltx25_convrot_two_stage_av",
     architecture="ltx25",
     source_format="int8_convrot",
-    worker="ltx_convrot_runtime_worker.py",
+    worker="ltx_convrot_v3_runtime_worker.py",
     required_assets=(
         "text_encoder",
         "latent_upscaler",
