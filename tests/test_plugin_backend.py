@@ -114,6 +114,21 @@ def test_ltx_text_to_video_uses_generic_job_coordinator(monkeypatch):
     assert submitted["descriptor"].capabilities.audio_output is True
 
 
+def test_generic_i2v_stability_hint_reaches_job_coordinator(monkeypatch):
+    result, submitted = _exercise_generate(
+        monkeypatch,
+        "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        plugin_backend.GeneratePayload(
+            image_path="/tmp/source.png",
+            prompt="subtle movement",
+            i2v_stability="locked",
+        ),
+    )
+    assert result["ok"] is True
+    assert submitted["request"]["image_path"] == "/tmp/source.png"
+    assert submitted["request"]["i2v_stability"] == "locked"
+
+
 def test_wan_i2v_uses_same_generic_job_coordinator(monkeypatch):
     result, submitted = _exercise_generate(monkeypatch, "Wan-AI/Wan2.2-I2V-A14B-Diffusers", plugin_backend.GeneratePayload(image_path="/tmp/source.png", prompt="move"))
     assert result["ok"] is True

@@ -256,6 +256,24 @@
     setHidden("recent-panel", !supportsImage);
     setHidden("negative-prompt-group", !caps.negative_prompt);
 
+    const stabilityModes = Array.isArray(constraints.i2v_stability_modes)
+      ? constraints.i2v_stability_modes.map(String)
+      : [];
+    const supportsStability = supportsImage && stabilityModes.length > 0;
+    setHidden("i2v-stability-group", !supportsStability);
+    setHidden("i2v-stability-hint", !supportsStability);
+    const stabilitySelect = byId("i2v-stability");
+    if (stabilitySelect && supportsStability) {
+      qsa("option", stabilitySelect).forEach((option) => {
+        option.hidden = !stabilityModes.includes(option.value);
+        option.disabled = !stabilityModes.includes(option.value);
+      });
+      const requestedDefault = String(constraints.i2v_stability_default || stabilityModes[0] || "model");
+      if (!stabilityModes.includes(stabilitySelect.value)) {
+        stabilitySelect.value = stabilityModes.includes(requestedDefault) ? requestedDefault : stabilityModes[0];
+      }
+    }
+
     const sourcePanel = byId("source-panel");
     sourcePanel?.classList.toggle("source-required", !!caps.source_image_required);
     const requirement = byId("source-requirement");
@@ -347,7 +365,14 @@
       fps: Math.max(1, Math.floor(Number(byId("gen-fps")?.value || defaults.fps || 16))),
     };
 
-    if (selectedSource) payload.image_path = selectedSource.path;
+    if (selectedSource) {
+      payload.image_path = selectedSource.path;
+      const stabilityModes = Array.isArray(constraints.i2v_stability_modes)
+        ? constraints.i2v_stability_modes.map(String)
+        : [];
+      const stability = String(byId("i2v-stability")?.value || "").trim();
+      if (stability && stabilityModes.includes(stability)) payload.i2v_stability = stability;
+    }
     if (caps.negative_prompt) payload.negative_prompt = String(byId("negative-prompt")?.value || "");
     if (!constraints.sampling_schedule_locked) {
       payload.num_inference_steps = Math.max(1, Math.floor(Number(byId("gen-steps")?.value || defaults.num_inference_steps || 30)));

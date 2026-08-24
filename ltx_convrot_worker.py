@@ -29,6 +29,12 @@ from ltx_convrot_recipe import (
     DEFAULT_UPSCALED_IMAGE_GUIDE_STRENGTH,
     normalize_sampler_name,
 )
+from ltx_i2v_stability import (
+    MODEL_STABILITY,
+    apply_i2v_stability,
+    guide_plan,
+    normalize_i2v_stability,
+)
 
 
 EXECUTION_PROFILE_ID = "ltx25_convrot_two_stage_av"
@@ -142,6 +148,33 @@ def _call_node(nodes_module, node_name: str, **kwargs):
     return _result_tuple(value)
 
 
+def _apply_guide_plan(
+    nodes,
+    *,
+    positive,
+    negative,
+    latent,
+    vae,
+    image,
+    guides,
+):
+    """Apply LTX keyframe/reference guides without executing a workflow graph."""
+
+    for guide in guides:
+        positive, negative, latent = _call_node(
+            nodes,
+            "LTXVAddGuide",
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            latent=latent,
+            image=image,
+            frame_idx=int(guide["frame_idx"]),
+            strength=float(guide["strength"]),
+        )[:3]
+    return positive, negative, latent
+
+
 def _add_asset_folder(folder_paths, category: str, path: str) -> None:
     parent = str(Path(path).expanduser().resolve().parent)
     try:
@@ -232,7 +265,7 @@ def _run(request: dict, output_dir: Path) -> dict:
     if missing:
         raise RuntimeError(f"ConvRot request is missing resolved assets: {', '.join(missing)}")
     assets = {"checkpoint": model_path, **{key: str(declared_assets[key]) for key in required}}
-    recipe = _effective_recipe(request)
+    source_recipe = _effective_recipe(request)
 
     prompt = str(request.get("prompt") or "").strip()
     if not prompt:
@@ -245,14 +278,36 @@ def _run(request: dict, output_dir: Path) -> dict:
     num_frames = _snap_frames(int(request.get("num_frames") or 241))
     fps = float(request.get("fps") or 24.0)
     seed = int(request.get("seed") if request.get("seed") is not None else 0) & UINT64_MASK
+
+    stability_mode = (
+        normalize_i2v_stability(request.get("i2v_stability"))
+        if input_image
+        else MODEL_STABILITY
+    )
+    if input_image:
+        recipe, stability_overrides = apply_i2v_stability(source_recipe, stability_mode)
+        stage1_guides = list(guide_plan(stability_mode, recipe["image_guide_strength"]))
+        stage2_guides = list(guide_plan(stability_mode, recipe["upscaled_image_guide_strength"]))
+    else:
+        recipe = dict(source_recipe)
+        stability_overrides = {}
+        stage1_guides = []
+        stage2_guides = []
+
     stage2_seed = seed if recipe["stage2_noise_policy"] == "same_seed" else _stage2_seed(seed)
 
     print(
         "DuckMotion ConvRot execution recipe: "
         f"origin={recipe['origin']}; sampler={recipe['sampler']}; cfg={recipe['cfg']}; "
         f"i2v={recipe['image_guide_strength']}/{recipe['upscaled_image_guide_strength']}; "
-        f"stage2_noise={recipe['stage2_noise_policy']}"
+        f"stage2_noise={recipe['stage2_noise_policy']}; "
+        f"stability={stability_mode if input_image else 'n/a'}"
     )
+    if input_image:
+        print(
+            "DuckMotion ConvRot reference guides: "
+            f"stage1={stage1_guides}; stage2={stage2_guides}"
+        )
     print(
         "DuckMotion ConvRot quality assets: "
         f"video_vae={Path(assets['video_vae']).name}; "
@@ -312,15 +367,20 @@ def _run(request: dict, output_dir: Path) -> dict:
         batch_size=1,
     )[0]
     if image_tensor is not None:
-        video_latent = _call_node(
+        # Current LTX-2.5 reference conditioning appends guide tokens and records
+        # their temporal/keyframe positions in positive/negative conditioning.
+        # Unlike the older Inplace node, the sampler can attend to the reference
+        # throughout the generated sequence instead of only inheriting frame-0
+        # latent pixels/noise masking.
+        positive, negative, video_latent = _apply_guide_plan(
             nodes,
-            "LTXVImgToVideoInplace",
+            positive=positive,
+            negative=negative,
+            latent=video_latent,
             vae=video_vae,
             image=image_tensor,
-            latent=video_latent,
-            strength=recipe["image_guide_strength"],
-            bypass=False,
-        )[0]
+            guides=stage1_guides,
+        )
 
     audio_latent = _call_node(
         nodes,
@@ -359,9 +419,8 @@ def _run(request: dict, output_dir: Path) -> dict:
     )[0]
     video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage1)[:2]
 
-    # Crop guide frames/conditioning before the second pass. For T2V this is
-    # effectively a no-op; for I2V it removes stage-one guide frames so the
-    # high-resolution guide can be reapplied after latent upscaling.
+    # Remove stage-one reference tokens before spatial upscaling, then rebuild
+    # them at the high-resolution latent grid below. For T2V this is a no-op.
     stage2_positive, stage2_negative, video_latent = _call_node(
         nodes,
         "LTXVCropGuides",
@@ -384,15 +443,15 @@ def _run(request: dict, output_dir: Path) -> dict:
         scale_by=LATENT_UPSCALE_SCALE,
     )[0]
     if image_tensor is not None:
-        video_latent = _call_node(
+        stage2_positive, stage2_negative, video_latent = _apply_guide_plan(
             nodes,
-            "LTXVImgToVideoInplace",
+            positive=stage2_positive,
+            negative=stage2_negative,
+            latent=video_latent,
             vae=video_vae,
             image=image_tensor,
-            latent=video_latent,
-            strength=recipe["upscaled_image_guide_strength"],
-            bypass=False,
-        )[0]
+            guides=stage2_guides,
+        )
 
     av_latent = _call_node(
         nodes,
@@ -419,6 +478,18 @@ def _run(request: dict, output_dir: Path) -> dict:
         latent_image=av_latent,
     )[0]
     video_latent, audio_latent = _call_node(nodes, "LTXVSeparateAVLatent", av_latent=stage2)[:2]
+
+    # Reference tokens are appended outside the generated timeline. Remove the
+    # high-resolution guide tokens before final decode while preserving the
+    # generated frames themselves.
+    if image_tensor is not None:
+        _unused_positive, _unused_negative, video_latent = _call_node(
+            nodes,
+            "LTXVCropGuides",
+            positive=stage2_positive,
+            negative=stage2_negative,
+            latent=video_latent,
+        )[:3]
 
     # The profile uses tiled video VAE decoding with explicit spatial/temporal
     # tile sizes to avoid a large full-latent decode allocation.
@@ -481,7 +552,13 @@ def _run(request: dict, output_dir: Path) -> dict:
         "stage2_seed": stage2_seed,
         "audio": True,
         "execution_profile": EXECUTION_PROFILE_ID,
+        "companion_execution_recipe": source_recipe,
         "execution_recipe": recipe,
+        "i2v_stability_mode": stability_mode if input_image else None,
+        "i2v_stability_overrides": stability_overrides if input_image else {},
+        "reference_conditioning": "LTXVAddGuide" if input_image else None,
+        "stage1_guide_plan": stage1_guides,
+        "stage2_guide_plan": stage2_guides,
         "asset_policy": request.get("asset_policy"),
         "quality_upgrades": request.get("quality_upgrades") or {},
         "video_vae": Path(assets["video_vae"]).name,

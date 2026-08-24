@@ -47,6 +47,16 @@ def test_create_view_is_driven_by_public_capabilities_and_constraints():
     assert "sampling_schedule_locked" in APP
 
 
+def test_i2v_stability_control_is_capability_driven_not_model_named():
+    assert 'id="i2v-stability"' in INDEX
+    assert "i2v_stability_modes" in APP
+    assert "i2v_stability_default" in APP
+    assert "payload.i2v_stability = stability" in APP
+    assert "Reference stability" in INDEX
+    assert "Identity stable" in INDEX
+    assert "Locked shot" in INDEX
+
+
 def test_hf_cache_selection_persists_canonical_repo_identity():
     assert 'item.location === "hf_cache" && item.repo_id' in APP
     assert "modelPersistedSource(activeModel)" in APP
@@ -57,3 +67,4 @@ def test_browser_never_dispatches_on_backend_or_architecture_name():
     assert "architecture" not in APP.lower()
     assert 'backend == "wan' not in APP.lower()
     assert 'backend == "ltx' not in APP.lower()
+    assert "redgraft" not in APP.lower()

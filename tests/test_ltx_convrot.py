@@ -55,6 +55,7 @@ def test_two_stage_av_profile_quality_defaults():
     assert LTX25_CONVROT_TWO_STAGE_AV.defaults["num_inference_steps"] == 11
     assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["video_vae"]["name"] == "ltx-2.5-video-vae-bf16.safetensors"
     assert LTX25_CONVROT_TWO_STAGE_AV.asset_defaults["latent_upscaler"]["name"] == "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+    assert LTX25_CONVROT_TWO_STAGE_AV.constraints["i2v_stability_modes"] == ["model", "identity", "locked"]
 
 
 def test_stage_two_seed_policy_can_preserve_or_increment_seed():
@@ -94,25 +95,30 @@ def test_call_node_supports_classic_and_modern_execute_contracts():
     assert _call_node(nodes, "InstanceModern", value=4, ignored="filtered") == (12,)
 
 
-def test_worker_source_keeps_two_stage_av_order_and_uses_effective_recipe():
+def test_worker_source_keeps_two_stage_av_order_and_uses_reference_attention():
     import ltx_convrot_worker
 
     source = inspect.getsource(ltx_convrot_worker._run)
+    guide_source = inspect.getsource(ltx_convrot_worker._apply_guide_plan)
+    module_source = inspect.getsource(ltx_convrot_worker)
+
     assert source.index('"ConditioningZeroOut"') < source.index('"LTXVConditioning"')
     assert '"VAELoader", vae_name=Path(assets["audio_vae"]).name' in source
     assert '"LTXVEmptyLatentAudio"' in source
     assert "audio_vae=audio_vae" in source
     assert source.index('"LTXVCropGuides"') < source.index('"LTXVLatentUpsampler"')
     assert source.index('"LTXVLatentUpsampler"') < source.index('"LatentUpscaleBy"')
-    assert "positive=stage2_positive" in source
-    assert "negative=stage2_negative" in source
-    assert 'strength=recipe["image_guide_strength"]' in source
-    assert 'strength=recipe["upscaled_image_guide_strength"]' in source
+    assert "positive, negative, video_latent = _apply_guide_plan" in source
+    assert "stage2_positive, stage2_negative, video_latent = _apply_guide_plan" in source
+    assert '"LTXVAddGuide"' in guide_source
+    assert '"LTXVImgToVideoInplace"' not in module_source
     assert 'sampler_name=recipe["sampler"]' in source
     assert 'sigmas=recipe["stage1_sigmas"]' in source
     assert 'sigmas=recipe["stage2_sigmas"]' in source
     assert 'cfg=recipe["cfg"]' in source
     assert "noise_seed=stage2_seed" in source
+    assert '"companion_execution_recipe": source_recipe' in source
+    assert '"reference_conditioning": "LTXVAddGuide"' in source
     assert source.index('"LTXVSeparateAVLatent", av_latent=stage2') < source.index('"VAEDecodeTiled"')
     assert "tile_size=VIDEO_DECODE_TILE_SIZE" in source
     assert "overlap=VIDEO_DECODE_OVERLAP" in source
@@ -130,6 +136,7 @@ def test_runtime_probe_uses_selected_profile_node_surface():
     for node_name in (
         "LTXVEmptyLatentAudio",
         "LTXVConcatAVLatent",
+        "LTXVAddGuide",
         "LTXVCropGuides",
         "LTXVLatentUpsampler",
         "VAEDecodeTiled",
@@ -138,6 +145,7 @@ def test_runtime_probe_uses_selected_profile_node_surface():
         "SaveVideo",
     ):
         assert node_name in LTX25_CONVROT_TWO_STAGE_AV.required_runtime_nodes
+    assert "LTXVImgToVideoInplace" not in LTX25_CONVROT_TWO_STAGE_AV.required_runtime_nodes
 
 
 def test_declarative_recipe_resolves_assets_without_brand_or_special_layout(tmp_path: Path):

@@ -257,6 +257,7 @@ print(json.dumps(out))
             "assets": assets.get("assets"),
             "prompt": str(request.get("prompt") or "").strip(),
             "input_image": str(request.get("image_path") or "").strip() or None,
+            "i2v_stability": str(request.get("i2v_stability") or "").strip() or None,
             "width": int(request.get("width") or defaults.get("width") or 1152),
             "height": int(request.get("height") or defaults.get("height") or 768),
             "num_frames": int(request.get("num_frames") or defaults.get("num_frames") or 241),
