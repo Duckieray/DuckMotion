@@ -193,7 +193,12 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "frame_count_modulo": 8,
         "frame_count_remainder": 1,
         "generation_stages": 2,
+        # Legacy summary flag retained for compatibility. It means the custom
+        # sigma/step schedule is model-defined; CFG/guidance is still a safe,
+        # independent user control for this profile.
         "sampling_schedule_locked": True,
+        "steps_locked": True,
+        "guidance_locked": False,
         # Generic public I2V stability choices. The browser never branches on
         # architecture/model name; a profile advertises this optional surface.
         "i2v_stability_modes": ["model", "identity", "locked"],
