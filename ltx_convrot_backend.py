@@ -10,7 +10,9 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from ltx_convrot_assets import inspect_convrot_assets
+from ltx_convrot_assets import inspect_convrot_assets, read_json
+from ltx_convrot_quality import apply_quality_asset_policy
+from ltx_convrot_recipe import extract_execution_recipe
 from model_recipes import ExecutionProfile, execution_profiles
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 
@@ -47,6 +49,21 @@ class LTX25ConvRotBackend(VideoBackend):
     @staticmethod
     def _profile(assets: dict[str, Any]) -> ExecutionProfile | None:
         return execution_profiles.get(str(assets.get("execution_profile") or ""))
+
+    @staticmethod
+    def _asset_state(
+        checkpoint: str,
+        *,
+        models_dir: str | None = None,
+    ) -> dict[str, Any]:
+        state = inspect_convrot_assets(checkpoint, models_dir=models_dir)
+        return apply_quality_asset_policy(state, checkpoint, models_dir=models_dir)
+
+    @staticmethod
+    def _execution_recipe(assets: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(assets.get("config_path") or "").strip()
+        config = read_json(Path(raw_path)) if raw_path else {}
+        return extract_execution_recipe(config)
 
     def _probe_runtime(
         self,
@@ -153,7 +170,7 @@ print(json.dumps(out))
 
         python_exe = self._python()
         comfy_root = self._comfy_root(python_exe)
-        assets = inspect_convrot_assets(descriptor.source)
+        assets = self._asset_state(descriptor.source)
         profile = self._profile(assets)
         profile_id = profile.profile_id if profile else ""
         key = (python_exe, str(comfy_root), descriptor.source, profile_id)
@@ -178,6 +195,7 @@ print(json.dumps(out))
             "reason": reason,
             "source_format": "int8_convrot",
             "execution_profile": profile_id or None,
+            "execution_recipe": self._execution_recipe(assets) if profile else None,
             "profile_defaults": dict(profile.defaults) if profile else {},
             "profile_constraints": dict(profile.constraints) if profile else {},
             "assets": assets,
@@ -200,10 +218,8 @@ print(json.dumps(out))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         config = kwargs.get("config") if isinstance(kwargs.get("config"), dict) else {}
-        assets = inspect_convrot_assets(
-            descriptor.source,
-            models_dir=str(config.get("models_dir") or "") or None,
-        )
+        models_dir = str(config.get("models_dir") or "") or None
+        assets = self._asset_state(descriptor.source, models_dir=models_dir)
         if not assets.get("ready"):
             raise RuntimeError(
                 "LTX ConvRot recipe/assets are incomplete: "
@@ -234,7 +250,10 @@ print(json.dumps(out))
             "model_path": descriptor.source,
             "model_name": descriptor.name,
             "execution_profile": profile.profile_id,
+            "execution_recipe": self._execution_recipe(assets),
             "config_path": assets.get("config_path"),
+            "asset_policy": assets.get("asset_policy"),
+            "quality_upgrades": assets.get("quality_upgrades") or {},
             "assets": assets.get("assets"),
             "prompt": str(request.get("prompt") or "").strip(),
             "input_image": str(request.get("image_path") or "").strip() or None,
@@ -304,13 +323,11 @@ print(json.dumps(out))
                 )
             result = json.loads(result_path.read_text(encoding="utf-8"))
             if not result.get("ok"):
-                raise RuntimeError(
-                    (
-                        str(result.get("error") or "LTX ConvRot runtime failed")
-                        + "\n"
-                        + "\n".join(logs[-20:])
-                    ).strip()
-                )
+                worker_trace = str(result.get("traceback") or "").strip()
+                detail = str(result.get("error") or "LTX ConvRot runtime failed")
+                if worker_trace:
+                    detail = f"{detail}\n{worker_trace}"
+                raise RuntimeError((detail + "\n" + "\n".join(logs[-20:])).strip())
             return result
 
     def unload(self) -> None:
