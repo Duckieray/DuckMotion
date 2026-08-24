@@ -262,6 +262,11 @@ print(json.dumps(out))
             "height": int(request.get("height") or defaults.get("height") or 768),
             "num_frames": int(request.get("num_frames") or defaults.get("num_frames") or 241),
             "fps": int(request.get("fps") or defaults.get("fps") or 24),
+            "guidance_scale": (
+                float(request["guidance_scale"])
+                if request.get("guidance_scale") is not None
+                else None
+            ),
             "seed": seed,
         }
         if not payload["prompt"]:
