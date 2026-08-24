@@ -14,11 +14,12 @@ alone is insufficient: ``comfy-aimdo`` must be initialized, devices registered,
 and ``CoreModelPatcher`` switched to the dynamic implementation before model
 objects are created.
 
-Normal Comfy prompt execution also keeps node execution inside
-``torch.inference_mode()``. The embedded worker dispatches nodes directly, so the
-launcher mirrors that execution contract as well. Without it, sampler outputs can
-be inference tensors that a later decode/output node tries to update outside
-InferenceMode, which PyTorch rejects.
+Normal Comfy prompt execution keeps the full graph lifetime inside one continuous
+``torch.inference_mode()`` context. The embedded worker dispatches nodes directly,
+so the launcher mirrors that execution contract around the complete recipe run.
+A per-node inference context is not equivalent: sampler outputs, lazy hooks, and
+model-management work may survive after a node returns and before the next node
+is entered.
 """
 
 from __future__ import annotations
@@ -260,35 +261,35 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
     return nodes
 
 
-def _install_inference_node_dispatch() -> None:
-    """Run direct Comfy node calls under the executor's inference-mode contract.
+def _install_full_inference_run_context() -> None:
+    """Keep the complete embedded Comfy recipe run inside InferenceMode.
 
-    Comfy's normal ``PromptExecutor`` wraps graph execution in
-    ``torch.inference_mode()``. DuckMotion calls the registered nodes directly,
-    so without this adapter an inference tensor produced by a sampler can later
-    be mutated by another node outside InferenceMode. Keep the adapter at the
-    dispatch boundary so every current/future profile node gets identical
-    semantics without recipe-specific tensor cloning.
+    Pinned Comfy's ``PromptExecutor`` enters one ``torch.inference_mode()``
+    context around graph execution. A per-node wrapper is not equivalent because
+    inference tensors and model-management hooks can remain live between direct
+    node calls. Wrap DuckMotion's recipe ``_run`` instead so loading,
+    conditioning, both samplers, latent transforms, decode, and output share one
+    uninterrupted inference-mode lifetime.
     """
-    original_call_node = recipe_worker._call_node
-    if getattr(original_call_node, "_duckmotion_inference_dispatch", False):
+    original_run = recipe_worker._run
+    if getattr(original_run, "_duckmotion_full_inference_run", False):
         return
 
-    def call_node_inference(nodes_module, node_name: str, **kwargs):
+    def run_inference(request, output_dir):
         import torch
 
         with torch.inference_mode():
-            return original_call_node(nodes_module, node_name, **kwargs)
+            return original_run(request, output_dir)
 
-    call_node_inference._duckmotion_inference_dispatch = True
-    recipe_worker._call_node = call_node_inference
+    run_inference._duckmotion_full_inference_run = True
+    recipe_worker._run = run_inference
 
 
 def main() -> int:
     # Keep profile semantics in one implementation while injecting only the
     # embedded-Comfy runtime composition points.
     recipe_worker._prepare_comfy = _prepare_comfy
-    _install_inference_node_dispatch()
+    _install_full_inference_run_context()
     return recipe_worker.main()
 
 
