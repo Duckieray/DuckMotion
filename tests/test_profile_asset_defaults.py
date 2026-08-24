@@ -17,13 +17,15 @@ prepare_assets = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare_assets)
 
 
-def test_convrot_profile_owns_standard_support_sources_not_checkpoint_brand():
+def test_convrot_profile_owns_current_standard_support_sources_not_checkpoint_brand():
     profile = LTX25_CONVROT_TWO_STAGE_AV
     assert set(profile.asset_defaults) == set(profile.required_assets)
     joined = repr(profile.asset_defaults).lower()
     assert "redgraft" not in joined
     assert "lightricks/ltx-2.5" in joined
-    assert "lightricks/ltx-2.3" in joined
+    assert "lightricks/ltx-2.3" not in joined
+    assert profile.asset_defaults["video_vae"]["name"] == "ltx-2.5-video-vae-bf16.safetensors"
+    assert profile.asset_defaults["latent_upscaler"]["name"] == "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
 
 
 def test_profile_source_fills_missing_url_for_same_standard_asset():

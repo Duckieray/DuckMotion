@@ -28,9 +28,10 @@ class ExecutionProfile:
     # never checkpoint-brand metadata.
     asset_defaults: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     evidence_node_types: frozenset[str] = frozenset()
-    # Distinctive literals that exported-workflow adapters must also observe
-    # before inferring this profile. Explicit duckmotion_recipe manifests do not
-    # need heuristic inference and therefore do not depend on these literals.
+    # Distinctive literals can be required when node structure alone is not
+    # enough to identify a recipe. LTX-2.5 ConvRot deliberately leaves this
+    # empty because sampler/sigma values are checkpoint-author tuning and are
+    # normalized separately instead of being used as profile identity.
     evidence_literals: frozenset[str] = frozenset()
     required_runtime_nodes: frozenset[str] = frozenset()
     defaults: Mapping[str, Any] = field(default_factory=dict)
@@ -141,13 +142,13 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
             "directory": "text_encoders",
         },
         "latent_upscaler": {
-            "name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-            "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+            "name": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
             "directory": "latent_upscale_models",
         },
         "video_vae": {
-            "name": "ltx-2.5-video-vae-conv-bf16.safetensors",
-            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+            "name": "ltx-2.5-video-vae-bf16.safetensors",
+            "url": "https://huggingface.co/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-bf16.safetensors",
             "directory": "vae",
         },
         "audio_vae": {
@@ -157,14 +158,10 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         },
     },
     evidence_node_types=_LTX25_CONVROT_EVIDENCE_NODES,
-    evidence_literals=frozenset(
-        {
-            "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0",
-            "0.85, 0.7250, 0.4219, 0.0",
-            "euler",
-            "bicubic",
-        }
-    ),
+    # Sampling literals are intentionally not profile identity. Current community
+    # checkpoints ship their own custom sigmas and may use Euler ancestral while
+    # still implementing this exact two-stage AV topology.
+    evidence_literals=frozenset(),
     required_runtime_nodes=_LTX25_CONVROT_EVIDENCE_NODES
     | frozenset(
         {
@@ -184,7 +181,8 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "height": 768,
         "num_frames": 241,
         "fps": 24,
-        "num_inference_steps": 8,
+        # Eight first-pass transitions plus three refinement transitions.
+        "num_inference_steps": 11,
         "guidance_scale": 1.0,
     },
     constraints={

@@ -3,7 +3,9 @@
 This worker imports a pinned Comfy core checkout as a Python library. It does not
 start ComfyUI, expose a workflow API, or execute the checkpoint's companion JSON
 as arbitrary code. Recipe resolution happens before worker dispatch; this module
-implements only the registered ``ltx25_convrot_two_stage_av`` profile.
+implements only the registered ``ltx25_convrot_two_stage_av`` topology while
+honoring the normalized, allow-listed tuning values supplied by its companion
+recipe.
 """
 
 from __future__ import annotations
@@ -17,12 +19,25 @@ from pathlib import Path
 import sys
 import traceback
 
+from ltx_convrot_recipe import (
+    DEFAULT_CFG,
+    DEFAULT_IMAGE_GUIDE_STRENGTH,
+    DEFAULT_SAMPLER,
+    DEFAULT_STAGE1_SIGMAS,
+    DEFAULT_STAGE2_NOISE_POLICY,
+    DEFAULT_STAGE2_SIGMAS,
+    DEFAULT_UPSCALED_IMAGE_GUIDE_STRENGTH,
+    normalize_sampler_name,
+)
+
 
 EXECUTION_PROFILE_ID = "ltx25_convrot_two_stage_av"
-HIGH_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
-LOW_SIGMAS = "0.85, 0.7250, 0.4219, 0.0"
-IMAGE_GUIDE_STRENGTH = 0.7
-UPSCALED_IMAGE_GUIDE_STRENGTH = 1.0
+# Backward-compatible names kept for tests/docs; these are fallback profile
+# values now, not immutable checkpoint behavior.
+HIGH_SIGMAS = DEFAULT_STAGE1_SIGMAS
+LOW_SIGMAS = DEFAULT_STAGE2_SIGMAS
+IMAGE_GUIDE_STRENGTH = DEFAULT_IMAGE_GUIDE_STRENGTH
+UPSCALED_IMAGE_GUIDE_STRENGTH = DEFAULT_UPSCALED_IMAGE_GUIDE_STRENGTH
 IMAGE_PREPROCESS_LONG_EDGE = 1536
 IMAGE_PREPROCESS_COMPRESSION = 18
 LATENT_UPSCALE_METHOD = "bicubic"
@@ -45,9 +60,53 @@ def _snap_frames(value: int) -> int:
 
 
 def _stage2_seed(seed: int) -> int:
-    """Derive the profile's independent second noise stream reproducibly."""
+    """Derive the legacy independent second noise stream reproducibly."""
 
     return (int(seed) + 1) & UINT64_MASK
+
+
+def _effective_recipe(request: dict) -> dict:
+    raw = request.get("execution_recipe")
+    raw = raw if isinstance(raw, dict) else {}
+
+    sampler = normalize_sampler_name(raw.get("sampler")) or DEFAULT_SAMPLER
+    stage1_sigmas = str(raw.get("stage1_sigmas") or DEFAULT_STAGE1_SIGMAS).strip()
+    stage2_sigmas = str(raw.get("stage2_sigmas") or DEFAULT_STAGE2_SIGMAS).strip()
+    try:
+        cfg = float(raw.get("cfg", DEFAULT_CFG))
+    except (TypeError, ValueError):
+        cfg = DEFAULT_CFG
+    if not 0.0 <= cfg <= 20.0:
+        cfg = DEFAULT_CFG
+
+    def strength(name: str, fallback: float) -> float:
+        try:
+            value = float(raw.get(name, fallback))
+        except (TypeError, ValueError):
+            return fallback
+        return value if 0.0 <= value <= 1.0 else fallback
+
+    stage2_noise_policy = str(
+        raw.get("stage2_noise_policy") or DEFAULT_STAGE2_NOISE_POLICY
+    ).strip().lower()
+    if stage2_noise_policy not in {"increment", "same_seed"}:
+        stage2_noise_policy = DEFAULT_STAGE2_NOISE_POLICY
+
+    return {
+        "sampler": sampler,
+        "stage1_sigmas": stage1_sigmas,
+        "stage2_sigmas": stage2_sigmas,
+        "cfg": cfg,
+        "image_guide_strength": strength(
+            "image_guide_strength", DEFAULT_IMAGE_GUIDE_STRENGTH
+        ),
+        "upscaled_image_guide_strength": strength(
+            "upscaled_image_guide_strength",
+            DEFAULT_UPSCALED_IMAGE_GUIDE_STRENGTH,
+        ),
+        "stage2_noise_policy": stage2_noise_policy,
+        "origin": str(raw.get("origin") or "profile_default"),
+    }
 
 
 def _result_tuple(value):
@@ -173,6 +232,7 @@ def _run(request: dict, output_dir: Path) -> dict:
     if missing:
         raise RuntimeError(f"ConvRot request is missing resolved assets: {', '.join(missing)}")
     assets = {"checkpoint": model_path, **{key: str(declared_assets[key]) for key in required}}
+    recipe = _effective_recipe(request)
 
     prompt = str(request.get("prompt") or "").strip()
     if not prompt:
@@ -185,7 +245,20 @@ def _run(request: dict, output_dir: Path) -> dict:
     num_frames = _snap_frames(int(request.get("num_frames") or 241))
     fps = float(request.get("fps") or 24.0)
     seed = int(request.get("seed") if request.get("seed") is not None else 0) & UINT64_MASK
-    stage2_seed = _stage2_seed(seed)
+    stage2_seed = seed if recipe["stage2_noise_policy"] == "same_seed" else _stage2_seed(seed)
+
+    print(
+        "DuckMotion ConvRot execution recipe: "
+        f"origin={recipe['origin']}; sampler={recipe['sampler']}; cfg={recipe['cfg']}; "
+        f"i2v={recipe['image_guide_strength']}/{recipe['upscaled_image_guide_strength']}; "
+        f"stage2_noise={recipe['stage2_noise_policy']}"
+    )
+    print(
+        "DuckMotion ConvRot quality assets: "
+        f"video_vae={Path(assets['video_vae']).name}; "
+        f"upscaler={Path(assets['latent_upscaler']).name}; "
+        f"policy={request.get('asset_policy') or 'recipe'}"
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     nodes = _prepare_comfy(output_dir, assets)
@@ -245,7 +318,7 @@ def _run(request: dict, output_dir: Path) -> dict:
             vae=video_vae,
             image=image_tensor,
             latent=video_latent,
-            strength=IMAGE_GUIDE_STRENGTH,
+            strength=recipe["image_guide_strength"],
             bypass=False,
         )[0]
 
@@ -271,10 +344,10 @@ def _run(request: dict, output_dir: Path) -> dict:
         model=model,
         positive=positive,
         negative=negative,
-        cfg=1.0,
+        cfg=recipe["cfg"],
     )[0]
-    sampler = _call_node(nodes, "KSamplerSelect", sampler_name="euler")[0]
-    high_sigmas = _call_node(nodes, "ManualSigmas", sigmas=HIGH_SIGMAS)[0]
+    sampler = _call_node(nodes, "KSamplerSelect", sampler_name=recipe["sampler"])[0]
+    high_sigmas = _call_node(nodes, "ManualSigmas", sigmas=recipe["stage1_sigmas"])[0]
     stage1 = _call_node(
         nodes,
         "SamplerCustomAdvanced",
@@ -317,7 +390,7 @@ def _run(request: dict, output_dir: Path) -> dict:
             vae=video_vae,
             image=image_tensor,
             latent=video_latent,
-            strength=UPSCALED_IMAGE_GUIDE_STRENGTH,
+            strength=recipe["upscaled_image_guide_strength"],
             bypass=False,
         )[0]
 
@@ -328,7 +401,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         audio_latent=audio_latent,
     )[0]
 
-    low_sigmas = _call_node(nodes, "ManualSigmas", sigmas=LOW_SIGMAS)[0]
+    low_sigmas = _call_node(nodes, "ManualSigmas", sigmas=recipe["stage2_sigmas"])[0]
     stage2 = _call_node(
         nodes,
         "SamplerCustomAdvanced",
@@ -339,7 +412,7 @@ def _run(request: dict, output_dir: Path) -> dict:
             model=model,
             positive=stage2_positive,
             negative=stage2_negative,
-            cfg=1.0,
+            cfg=recipe["cfg"],
         )[0],
         sampler=sampler,
         sigmas=low_sigmas,
@@ -408,11 +481,19 @@ def _run(request: dict, output_dir: Path) -> dict:
         "stage2_seed": stage2_seed,
         "audio": True,
         "execution_profile": EXECUTION_PROFILE_ID,
+        "execution_recipe": recipe,
+        "asset_policy": request.get("asset_policy"),
+        "quality_upgrades": request.get("quality_upgrades") or {},
+        "video_vae": Path(assets["video_vae"]).name,
+        "latent_upscaler": Path(assets["latent_upscaler"]).name,
         "sampling": "ltx25_convrot_two_stage_av",
-        "high_sigmas": HIGH_SIGMAS,
-        "low_sigmas": LOW_SIGMAS,
-        "image_guide_strength": IMAGE_GUIDE_STRENGTH if input_image else None,
-        "stage2_image_guide_strength": UPSCALED_IMAGE_GUIDE_STRENGTH if input_image else None,
+        "sampler": recipe["sampler"],
+        "cfg": recipe["cfg"],
+        "high_sigmas": recipe["stage1_sigmas"],
+        "low_sigmas": recipe["stage2_sigmas"],
+        "stage2_noise_policy": recipe["stage2_noise_policy"],
+        "image_guide_strength": recipe["image_guide_strength"] if input_image else None,
+        "stage2_image_guide_strength": recipe["upscaled_image_guide_strength"] if input_image else None,
         "image_preprocess_long_edge": IMAGE_PREPROCESS_LONG_EDGE if input_image else None,
         "image_preprocess_compression": IMAGE_PREPROCESS_COMPRESSION if input_image else None,
         "latent_upscale_method": LATENT_UPSCALE_METHOD,
@@ -440,6 +521,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "frame_count": num_frames,
         "fps": fps,
         "execution_profile": EXECUTION_PROFILE_ID,
+        "execution_recipe": recipe,
     }
 
 

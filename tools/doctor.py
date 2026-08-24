@@ -57,6 +57,43 @@ def _short_reason(payload: dict) -> str:
     return "ready" if payload.get("ready") else "not ready"
 
 
+def _print_convrot_details(readiness: dict, assets: dict) -> None:
+    recipe = readiness.get("execution_recipe")
+    if isinstance(recipe, dict):
+        origin = str(recipe.get("origin") or "profile_default")
+        sampler = str(recipe.get("sampler") or "")
+        cfg = recipe.get("cfg")
+        noise = str(recipe.get("stage2_noise_policy") or "")
+        guide1 = recipe.get("image_guide_strength")
+        guide2 = recipe.get("upscaled_image_guide_strength")
+        print(
+            "      effective tuning: "
+            f"{origin}; sampler={sampler}; cfg={cfg}; "
+            f"i2v={guide1}/{guide2}; stage2_noise={noise}"
+        )
+        if recipe.get("stage1_sigmas"):
+            print(f"      stage1 sigmas: {recipe['stage1_sigmas']}")
+        if recipe.get("stage2_sigmas"):
+            print(f"      stage2 sigmas: {recipe['stage2_sigmas']}")
+
+    policy = str(assets.get("asset_policy") or "").strip()
+    names = assets.get("asset_names") if isinstance(assets.get("asset_names"), dict) else {}
+    if policy:
+        print(f"      asset policy: {policy}")
+    if names.get("video_vae"):
+        print(f"      video VAE: {names['video_vae']}")
+    if names.get("latent_upscaler"):
+        print(f"      latent upscaler: {names['latent_upscaler']}")
+    upgrades = assets.get("quality_upgrades") if isinstance(assets.get("quality_upgrades"), dict) else {}
+    for kind, change in upgrades.items():
+        if not isinstance(change, dict):
+            continue
+        print(
+            f"      quality upgrade ({kind}): "
+            f"{change.get('from')} -> {change.get('to')}"
+        )
+
+
 def main() -> int:
     config = _load_config()
     models_dir = str(config.get("models_dir") or "").strip()
@@ -131,6 +168,8 @@ def main() -> int:
             recipe_origin = str(assets.get("recipe_origin") or "").strip()
             if recipe_origin:
                 print(f"      recipe source: {recipe_origin}")
+            if source_format == "int8_convrot":
+                _print_convrot_details(readiness, assets)
             if not assets.get("ready"):
                 for missing in assets.get("missing") or []:
                     print(f"      missing: {missing}")

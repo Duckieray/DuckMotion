@@ -26,7 +26,7 @@ canonical source/model-version identity
 cached declarative recipe candidates
 ```
 
-An `ExecutionProfile` answers **how DuckMotion runs it**:
+An `ExecutionProfile` answers **which trusted runtime topology can execute it**:
 
 ```text
 profile id
@@ -38,6 +38,20 @@ required runtime APIs/nodes
 recipe defaults/constraints
 structural recipe evidence
 ```
+
+A validated companion may additionally answer **how this checkpoint author tuned
+that topology**:
+
+```text
+sampler
+stage sigma schedules
+CFG
+guide strengths
+stage-to-stage noise policy
+```
+
+Those tuning values are not architecture identity. DuckMotion normalizes only an
+allow-listed subset it understands and never executes arbitrary workflow JSON.
 
 Display/vendor/community names are not part of runtime or recipe selection.
 
@@ -109,13 +123,34 @@ Adapters must never execute arbitrary companion code/graphs. If zero profiles
 match, the model is blocked with a diagnostic. If multiple profiles/recipe
 candidates match, DuckMotion refuses to guess.
 
+For LTX-2.5 ConvRot, graph topology identifies the installed two-stage AV
+profile. Checkpoint-author sampling details such as Euler vs Euler ancestral and
+custom sigma schedules are normalized separately. This prevents a new tuning
+schedule from being mistaken for a new architecture while still preserving the
+checkpoint author's intended generation behavior.
+
+The allow-listed normalized execution settings currently include:
+
+```text
+sampler: euler | euler_ancestral
+stage1_sigmas
+stage2_sigmas
+cfg
+image_to_video stage1/stage2 guide strengths
+stage2 noise policy: same_seed | increment
+```
+
+Anything missing, malformed, unsupported, or ambiguous falls back to the audited
+profile default instead of being executed dynamically.
+
 This makes the trust chain intentionally one-way:
 
 ```text
 content hash identifies provenance
   -> provenance supplies declarative evidence
   -> recipe adapter proves a compatible profile
-  -> profile selects worker/runtime semantics
+  -> companion tuning is normalized into safe fields
+  -> profile selects worker/runtime topology
 ```
 
 Never reverse that chain by letting a provider/model/display name choose a
@@ -137,16 +172,27 @@ an asset manifest. Generic `tools/prepare_model_assets.py` then:
 - never downloads or substitutes the selected checkpoint itself.
 
 Profile-owned standard asset sources are recipe/runtime semantics, not community
-checkpoint metadata. For example, the installed LTX-2.5 ConvRot two-stage AV
-profile can declare the official Lightricks text encoder, VAE, and upscaler
-sources without referring to any community checkpoint brand.
+checkpoint metadata. The LTX-2.5 ConvRot profile now uses current LTX-2.5 quality
+assets as its standard defaults, including the full video VAE and LTX-2.5 latent
+spatial upscaler.
+
+A quality policy may upgrade only explicitly known legacy standard assets (for
+example the lightweight LTX-2.5 Conv VAE or older standard spatial upscaler) to
+the current profile defaults. A differently named custom companion asset is
+never silently replaced. Advanced deployments that need exact legacy asset
+behavior may set `DUCKMOTION_LTX_CONVROT_ASSET_POLICY=recipe`.
+
+Memory policy stays independent of recipe fidelity. DynamicVRAM, CPU/offload
+behavior, split attention, and tiled VAE decoding may trade speed for memory, but
+they do not rewrite sampler/sigma/conditioning semantics.
 
 ## Adding support
 
 Prefer the smallest extension:
 
-- same format and same recipe: no runtime change;
-- same format, new recipe: add an `ExecutionProfile` + worker;
+- same format and same recipe topology: no runtime change; normalize companion
+  tuning if present;
+- same format, genuinely new topology: add an `ExecutionProfile` + worker;
 - new provenance catalog: register a `CheckpointProvenanceProvider`;
 - same recipe shape, new asset source/layout: extend/register an asset provider;
 - genuinely new runtime API family: add a backend/runtime.
