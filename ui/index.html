@@ -137,6 +137,26 @@
 
               <div class="field-grid">
                 <div>
+                  <label class="label" for="preset-seconds">Target Seconds</label>
+                  <input id="preset-seconds" class="input" type="number" min="1" max="60" step="0.5" value="5" />
+                </div>
+                <div>
+                  <label class="label" for="preset-quality">Quality Preset</label>
+                  <select id="preset-quality" class="input">
+                    <option value="preview">Preview</option>
+                    <option value="balanced" selected>Balanced</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label">Preset Helper</label>
+                  <button id="apply-generate-preset" class="btn btn-secondary" type="button">Apply Preset</button>
+                </div>
+              </div>
+              <div id="preset-summary" class="hint-inline">Duration and preset settings will follow the selected model's constraints.</div>
+
+              <div class="field-grid">
+                <div>
                   <label class="label" for="gen-width">Width</label>
                   <input id="gen-width" class="input" type="number" min="256" />
                 </div>
@@ -158,7 +178,7 @@
                 </div>
                 <div id="gen-guidance-group">
                   <label class="label" for="gen-guidance">Guidance</label>
-                  <input id="gen-guidance" class="input" type="number" min="0" step="0.1" />
+                  <input id="gen-guidance" class="input" type="number" min="0" max="20" step="0.1" />
                 </div>
                 <div>
                   <label class="label" for="gen-seed">Seed</label>
