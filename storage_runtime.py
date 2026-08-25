@@ -279,12 +279,13 @@ class VideoStorageRuntime:
             (run_dir / name for name in ("poster.jpg", "poster.png", "preview.jpg", "preview.png") if (run_dir / name).exists()),
             None,
         )
+        run_id = str(meta.get("run_id") or run_dir.name)
         return {
-            "run_id": str(meta.get("run_id") or run_dir.name),
+            "run_id": run_id,
             "job_id": meta.get("job_id"),
             "created_at": meta.get("created_at") or run_dir.stat().st_mtime,
-            "video": self.safe_web_path(video) or str(video),
-            "poster": self.safe_web_path(poster) if poster is not None else None,
+            "video": f"/gallery/file/{run_id}/{video.name}",
+            "poster": f"/gallery/file/{run_id}/{poster.name}" if poster is not None else None,
             "video_path": str(video),
             "poster_path": str(poster) if poster is not None else None,
             "meta": meta,
