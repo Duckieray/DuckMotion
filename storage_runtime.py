@@ -122,7 +122,8 @@ class VideoStorageRuntime:
     @staticmethod
     def safe_web_path(path: Path) -> str | None:
         try:
-            return str(to_web_path(Path(path)))
+            raw = to_web_path(Path(path))
+            return "/" + str(raw).lstrip("/")
         except Exception:
             return None
 
