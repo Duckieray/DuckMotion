@@ -104,20 +104,19 @@ class ExecutionProfileRegistry:
 execution_profiles = ExecutionProfileRegistry()
 
 
+# Profile identity is the stable two-stage LTX AV topology. Conditioning details
+# and sampler values are recipe semantics, not checkpoint/brand identity.
 _LTX25_CONVROT_EVIDENCE_NODES = frozenset(
     {
         "UNETLoader",
         "CLIPLoader",
         "VAELoader",
-        "ConditioningZeroOut",
         "LTXVConditioning",
         "LTXVEmptyLatentAudio",
         "LTXVConcatAVLatent",
         "SamplerCustomAdvanced",
         "LTXVSeparateAVLatent",
-        "LTXVCropGuides",
         "LTXVLatentUpsampler",
-        "LatentUpscaleBy",
         "LatentUpscaleModelLoader",
         "VAEDecodeTiled",
         "LTXVAudioVAEDecode",
@@ -158,23 +157,23 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         },
     },
     evidence_node_types=_LTX25_CONVROT_EVIDENCE_NODES,
-    # Sampling literals are intentionally not profile identity. Current community
-    # checkpoints ship their own custom sigmas and may use Euler ancestral while
-    # still implementing this exact two-stage AV topology.
     evidence_literals=frozenset(),
     required_runtime_nodes=_LTX25_CONVROT_EVIDENCE_NODES
     | frozenset(
         {
             "LTXVPreprocess",
             "EmptyLTXVLatentVideo",
-            # Current LTX-2.5 I2V uses reference/keyframe attention rather than
-            # only replacing the first latent frames. This is also the primitive
-            # used by Comfy's first/last-frame workflow.
+            # Normal I2V in the current LTX-2.5 two-stage subgraph uses latent
+            # first-frame/noise-mask conditioning. AddGuide/CropGuides remain
+            # installed solely for the explicit advanced first/last mode.
+            "LTXVImgToVideoInplace",
+            "LTXVDualCFGGuider",
             "LTXVAddGuide",
+            "LTXVCropGuides",
             "RandomNoise",
-            "CFGGuider",
             "KSamplerSelect",
             "ManualSigmas",
+            "CLIPTextEncode",
             "CreateVideo",
             "SaveVideo",
         }
@@ -199,8 +198,6 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
         "sampling_schedule_locked": True,
         "steps_locked": True,
         "guidance_locked": False,
-        # Generic public I2V stability choices. The browser never branches on
-        # architecture/model name; a profile advertises this optional surface.
         "i2v_stability_modes": ["model", "identity", "locked"],
         "i2v_stability_default": "model",
     },

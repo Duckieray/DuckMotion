@@ -61,16 +61,23 @@ def _print_convrot_details(readiness: dict, assets: dict) -> None:
     recipe = readiness.get("execution_recipe")
     if isinstance(recipe, dict):
         origin = str(recipe.get("origin") or "profile_default")
-        sampler = str(recipe.get("sampler") or "")
-        cfg = recipe.get("cfg")
+        sampler1 = str(recipe.get("stage1_sampler") or recipe.get("sampler") or "")
+        sampler2 = str(recipe.get("stage2_sampler") or recipe.get("sampler") or "")
+        video_cfg = recipe.get("video_cfg", recipe.get("cfg"))
+        audio_cfg = recipe.get("audio_cfg", recipe.get("cfg"))
         noise = str(recipe.get("stage2_noise_policy") or "")
+        if noise == "fixed" and recipe.get("stage2_fixed_seed") is not None:
+            noise = f"fixed:{recipe['stage2_fixed_seed']}"
         guide1 = recipe.get("image_guide_strength")
         guide2 = recipe.get("upscaled_image_guide_strength")
         print(
             "      effective tuning: "
-            f"{origin}; sampler={sampler}; cfg={cfg}; "
+            f"{origin}; samplers={sampler1}/{sampler2}; "
+            f"cfg(video/audio)={video_cfg}/{audio_cfg}; "
             f"i2v={guide1}/{guide2}; stage2_noise={noise}"
         )
+        if recipe.get("negative_prompt"):
+            print(f"      negative conditioning: {recipe['negative_prompt']}")
         if recipe.get("stage1_sigmas"):
             print(f"      stage1 sigmas: {recipe['stage1_sigmas']}")
         if recipe.get("stage2_sigmas"):

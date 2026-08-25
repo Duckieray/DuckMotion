@@ -43,10 +43,11 @@ A validated companion may additionally answer **how this checkpoint author tuned
 that topology**:
 
 ```text
-sampler
+stage samplers
 stage sigma schedules
-CFG
+video/audio CFG
 guide strengths
+negative conditioning
 stage-to-stage noise policy
 ```
 
@@ -129,19 +130,47 @@ custom sigma schedules are normalized separately. This prevents a new tuning
 schedule from being mistaken for a new architecture while still preserving the
 checkpoint author's intended generation behavior.
 
+### Authoritative exported-workflow graph
+
+Comfy workflow files may retain historical executor snapshots under metadata such
+as `extra.prompt` even after the editable workflow/subgraph has changed. Those
+snapshots are **not** active recipe evidence. Combining them with current nodes
+can create a recipe that never existed (for example an old Euler sampler with a
+new Euler-ancestral subgraph, or stage-one/stage-two strengths in reverse order).
+
+The LTX adapter therefore chooses one authoritative graph in this order:
+
+1. a compatible active `definitions.subgraphs[]` graph;
+2. otherwise the compatible top-level `nodes` graph;
+3. otherwise a deliberately supported API-prompt node mapping.
+
+It does not recursively merge arbitrary dictionaries and it ignores disabled or
+bypassed workflow nodes. Stage semantics are resolved through links into each
+`SamplerCustomAdvanced` node rather than inferred from visual/execution order.
+
 The allow-listed normalized execution settings currently include:
 
 ```text
-sampler: euler | euler_ancestral
+stage1_sampler / stage2_sampler: euler | euler_ancestral
 stage1_sigmas
 stage2_sigmas
-cfg
-image_to_video stage1/stage2 guide strengths
-stage2 noise policy: same_seed | increment
+video_cfg / audio_cfg
+image_to_video stage1/stage2 Inplace strengths
+negative_prompt
+stage2 noise policy: same_seed | increment | fixed
+stage2_fixed_seed (only with fixed policy)
 ```
 
 Anything missing, malformed, unsupported, or ambiguous falls back to the audited
 profile default instead of being executed dynamically.
+
+The current native two-stage I2V topology uses source-frame
+`LTXVImgToVideoInplace` conditioning, LTX AV Dual CFG, a learned 2x latent
+upscaler between stages, and a second Inplace conditioning pass. `LTXVAddGuide`
+is reserved for the explicit advanced first/last-frame mode; it is not a drop-in
+replacement for normal I2V conditioning. Likewise, the learned spatial upscaler
+must not be followed by a generic 0.5x latent resize, which would cancel the
+refinement stage's spatial gain.
 
 This makes the trust chain intentionally one-way:
 
