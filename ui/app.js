@@ -885,6 +885,27 @@
     if (autoTimer) window.clearInterval(autoTimer);
   });
 
+  window.addEventListener("message", async (event) => {
+    const data = event.data;
+    if (!data || data.type !== "webbduck.duckmotion.handoff") return;
+
+    const imagePath = data.image?.src;
+    if (!imagePath) return;
+
+    try {
+      const form = new FormData();
+      form.append("path", imagePath);
+      const result = await api.postForm("/staging/from-webbduck", form);
+      selectedSource = result?.item || null;
+      renderSelectedSource();
+      await loadStaging();
+      updatePresetSummary();
+      updateGenerateAvailability();
+    } catch (error) {
+      console.error("DuckMotion: failed to stage image from WebbDuck:", error);
+    }
+  });
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initialize, { once: true });
   } else {
