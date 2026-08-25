@@ -20,11 +20,21 @@ so the launcher mirrors that execution contract around the complete recipe run.
 A per-node inference context is not equivalent: sampler outputs, lazy hooks, and
 model-management work may survive after a node returns and before the next node
 is entered.
+
+The current LTX-2.5 two-stage AV topology materially increases the token count in
+stage two because the learned spatial upsampler is a real 2x refinement. On
+16-GB-class GPUs we must therefore use an attention implementation whose memory
+usage does not depend on allocating the complete QxK matrix. Comfy's split
+attention implementation only slices when the AV token count is exactly divisible
+by its power-of-two retry count; otherwise it retries the full tensor and can ask
+CUDA for tens of GiB. The conservative policy uses sub-quadratic attention, while
+24-GB-class hardware uses PyTorch SDPA.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 from pathlib import Path
 import sys
@@ -47,9 +57,13 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
     """Return Comfy-native memory policy for the available VRAM class.
 
     ``auto`` is intentionally conservative on 16 GB-class GPUs. DynamicVRAM is
-    the Comfy equivalent of Diffusers submodule/sequential offload; split cross
-    attention is the equivalent of attention slicing; the recipe already uses
-    tiled spatial/temporal VAE decoding.
+    the Comfy equivalent of Diffusers submodule/sequential offload; the recipe
+    already uses tiled spatial/temporal VAE decoding.
+
+    Do not force Comfy's split-attention implementation for the two-stage AV
+    profile. Its power-of-two slicer falls back to the full query whenever the
+    combined video+audio token count is not evenly divisible by the retry count,
+    which can turn a recoverable stage-two workload into a 40+ GiB allocation.
     """
     selected = str(
         mode
@@ -73,12 +87,14 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
                 "--vram-headroom", "1.5",
                 "--cache-none",
                 "--disable-smart-memory",
-                "--use-split-cross-attention",
+                # Sub-quadratic attention chunks arbitrary query/key lengths and
+                # therefore remains bounded for the mixed AV token sequence.
+                "--use-quad-cross-attention",
             ),
             "vram_headroom_gb": 1.5,
             "dynamic_vram": True,
             "aggressive_offload": True,
-            "split_attention": True,
+            "attention_backend": "sub_quad",
         }
 
     if selected in {"balanced", "model"}:
@@ -88,11 +104,14 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
                 "--enable-dynamic-vram",
                 "--vram-headroom", "0.75",
                 "--cache-none",
+                # Built-in PyTorch SDPA can use fused/memory-efficient CUDA
+                # kernels and avoids materializing the complete attention map.
+                "--use-pytorch-cross-attention",
             ),
             "vram_headroom_gb": 0.75,
             "dynamic_vram": True,
             "aggressive_offload": False,
-            "split_attention": False,
+            "attention_backend": "pytorch_sdpa",
         }
 
     if selected in {"performance", "none", "off", "unrestricted"}:
@@ -106,7 +125,7 @@ def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict
             "vram_headroom_gb": 0.0,
             "dynamic_vram": False,
             "aggressive_offload": False,
-            "split_attention": False,
+            "attention_backend": "comfy_auto",
         }
 
     raise ValueError(
@@ -216,7 +235,8 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
         "DuckMotion ConvRot memory policy: "
         f"{policy['name']} (VRAM={total_vram_gb:.2f} GiB, "
         f"free_before_load={free_vram_gb:.2f} GiB, "
-        f"headroom={policy['vram_headroom_gb']:.2f} GiB)"
+        f"headroom={policy['vram_headroom_gb']:.2f} GiB, "
+        f"attention={policy['attention_backend']})"
     )
 
     if str(comfy_root) not in sys.path:
@@ -246,7 +266,7 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
     print(
         "DuckMotion ConvRot Comfy memory manager: "
         f"dynamic_vram={'active' if dynamic_vram_active else 'disabled'}; "
-        f"split_attention={bool(args.use_split_cross_attention)}; "
+        f"attention={policy['attention_backend']}; "
         f"aggressive_offload={bool(args.disable_smart_memory)}"
     )
 
@@ -285,12 +305,60 @@ def _install_full_inference_run_context() -> None:
     recipe_worker._run = run_inference
 
 
+def _cleanup_runtime_memory() -> None:
+    """Best-effort cleanup and diagnostics before the one-shot worker exits.
+
+    ConvRot jobs already run in a fresh subprocess, so process exit is the hard
+    isolation boundary between generations. This cleanup is intentionally an
+    additional observable safeguard: it unloads Comfy-managed models and reports
+    the allocator state after success or failure, making a true retained-memory
+    problem distinguishable from an in-run peak allocation.
+    """
+    try:
+        import torch
+    except Exception:
+        return
+
+    try:
+        import comfy.model_management as model_management
+
+        # Passing device=None makes Comfy consider every loaded device/model.
+        model_management.free_memory(1e32, None)
+        model_management.cleanup_models()
+        model_management.soft_empty_cache(True)
+    except Exception as exc:
+        print(f"DuckMotion ConvRot cleanup warning: {exc}")
+
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+
+    try:
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+        free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+        print(
+            "DuckMotion ConvRot cleanup: "
+            f"allocated={torch.cuda.memory_allocated(0) / 1024**3:.2f} GiB; "
+            f"reserved={torch.cuda.memory_reserved(0) / 1024**3:.2f} GiB; "
+            f"free={free_bytes / 1024**3:.2f}/{total_bytes / 1024**3:.2f} GiB"
+        )
+    except Exception as exc:
+        print(f"DuckMotion ConvRot cleanup diagnostic warning: {exc}")
+
+
 def main() -> int:
     # Keep profile semantics in one implementation while injecting only the
     # embedded-Comfy runtime composition points.
     recipe_worker._prepare_comfy = _prepare_comfy
     _install_full_inference_run_context()
-    return recipe_worker.main()
+    try:
+        return recipe_worker.main()
+    finally:
+        _cleanup_runtime_memory()
 
 
 if __name__ == "__main__":
