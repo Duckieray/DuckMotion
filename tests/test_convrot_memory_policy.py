@@ -13,11 +13,14 @@ def test_convrot_auto_uses_conservative_policy_on_16gb_class_gpu(monkeypatch):
     policy = resolve_memory_policy(15.51)
 
     assert policy["name"] == "conservative"
+    assert policy["attention_backend"] == "sub_quad"
     args = policy["comfy_args"]
     assert "--enable-dynamic-vram" in args
     assert "--cache-none" in args
     assert "--disable-smart-memory" in args
-    assert "--use-split-cross-attention" in args
+    assert "--use-quad-cross-attention" in args
+    assert "--use-split-cross-attention" not in args
+    assert "--use-pytorch-cross-attention" not in args
     assert args[args.index("--vram-headroom") + 1] == "1.5"
 
 
@@ -27,10 +30,12 @@ def test_convrot_auto_uses_balanced_policy_on_24gb_gpu(monkeypatch):
     policy = resolve_memory_policy(24.0)
 
     assert policy["name"] == "balanced"
+    assert policy["attention_backend"] == "pytorch_sdpa"
     args = policy["comfy_args"]
     assert "--enable-dynamic-vram" in args
     assert "--cache-none" in args
     assert "--disable-smart-memory" not in args
+    assert "--use-pytorch-cross-attention" in args
     assert "--use-split-cross-attention" not in args
     assert args[args.index("--vram-headroom") + 1] == "0.75"
 
@@ -41,6 +46,7 @@ def test_convrot_auto_keeps_large_gpu_on_performance_policy(monkeypatch):
     policy = resolve_memory_policy(48.0)
 
     assert policy["name"] == "performance"
+    assert policy["attention_backend"] == "comfy_auto"
     assert policy["comfy_args"] == ("--disable-dynamic-vram", "--cache-none")
 
 
@@ -50,6 +56,12 @@ def test_convrot_memory_policy_can_be_overridden_for_debugging(monkeypatch):
     policy = resolve_memory_policy(15.51)
 
     assert policy["name"] == "balanced"
+    assert policy["attention_backend"] == "pytorch_sdpa"
+
+
+def test_no_low_or_mid_vram_policy_forces_split_attention():
+    for total_vram_gb in (8.0, 15.51, 17.99, 18.0, 24.0, 27.99):
+        assert "--use-split-cross-attention" not in resolve_memory_policy(total_vram_gb)["comfy_args"]
 
 
 def test_execution_profile_uses_vram_aware_runtime_launcher():
@@ -104,7 +116,20 @@ def test_embedded_comfy_full_recipe_run_stays_inside_inference_mode(monkeypatch)
     assert observed == [True, True]
 
 
-def test_full_inference_context_is_installed_by_runtime_main():
+def test_runtime_cleanup_unloads_comfy_models_and_cuda_cache():
+    source = inspect.getsource(ltx_convrot_runtime_worker._cleanup_runtime_memory)
+    assert "model_management.free_memory(1e32, None)" in source
+    assert "model_management.cleanup_models()" in source
+    assert "model_management.soft_empty_cache(True)" in source
+    assert "torch.cuda.empty_cache()" in source
+    assert "torch.cuda.memory_allocated" in source
+    assert "torch.cuda.memory_reserved" in source
+    assert "torch.cuda.mem_get_info" in source
+
+
+def test_full_inference_context_and_cleanup_are_installed_by_runtime_main():
     source = inspect.getsource(ltx_convrot_runtime_worker.main)
     assert "_install_full_inference_run_context()" in source
     assert "_install_inference_node_dispatch" not in source
+    assert "finally:" in source
+    assert "_cleanup_runtime_memory()" in source
