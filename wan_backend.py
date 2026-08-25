@@ -18,12 +18,17 @@ from runtime_probe import probe_python_runtime
 
 def _gguf_pair_mate(path: Path) -> Path | None:
     stem = path.stem
-    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    match = re.search(r"(?i)^(.*?)([_ .-])([hl]|high|low)$", stem)
     if match:
-        other = "L" if match.group(3).upper() == "H" else "H"
-        candidate = path.with_name(f"{match.group(1)}{match.group(2)}{other}{path.suffix}")
-        if candidate.exists():
-            return candidate
+        family = match.group(1)
+        sep = match.group(2)
+        role_text = match.group(3).lower()
+        is_high = role_text in ("h", "high")
+        opposite = ("low" if len(role_text) > 1 else "l") if is_high else ("high" if len(role_text) > 1 else "h")
+        for variant in {opposite, opposite.upper(), opposite.capitalize()}:
+            candidate = path.with_name(f"{family}{sep}{variant}{path.suffix}")
+            if candidate.exists():
+                return candidate
     return None
 
 

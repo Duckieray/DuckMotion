@@ -64,12 +64,17 @@ def _source_size_gb(source: str) -> float:
 def _gguf_pair_path(path: Path) -> Path | None:
     """Find the H/L mate for Wan2.2 dual-transformer GGUF checkpoints."""
     stem = path.stem
-    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    match = re.search(r"(?i)^(.*?)([_ .-])([hl]|high|low)$", stem)
     if match:
-        other = "L" if match.group(3).upper() == "H" else "H"
-        candidate = path.with_name(f"{match.group(1)}{match.group(2)}{other}{path.suffix}")
-        if candidate.exists():
-            return candidate
+        family = match.group(1)
+        sep = match.group(2)
+        role_text = match.group(3).lower()
+        is_high = role_text in ("h", "high")
+        opposite = ("low" if len(role_text) > 1 else "l") if is_high else ("high" if len(role_text) > 1 else "h")
+        for variant in {opposite, opposite.upper(), opposite.capitalize()}:
+            candidate = path.with_name(f"{family}{sep}{variant}{path.suffix}")
+            if candidate.exists():
+                return candidate
 
     swaps = (
         ("high_noise", "low_noise"),
@@ -94,9 +99,9 @@ def _gguf_pair_path(path: Path) -> Path | None:
 
 
 def _gguf_role(path: Path) -> str | None:
-    match = re.search(r"(?i)(?:[_ .-]?)([hl])$", path.stem)
+    match = re.search(r"(?i)(?:[_ .-])([hl]|high|low)$", path.stem)
     if match:
-        return match.group(1).upper()
+        return "H" if match.group(1).lower() in ("h", "high") else "L"
     lower = path.name.lower()
     if "high_noise" in lower or "high-noise" in lower or "high noise" in lower:
         return "H"

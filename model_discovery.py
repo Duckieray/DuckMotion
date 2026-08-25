@@ -79,11 +79,13 @@ def _public_item(*, descriptor, location: str) -> dict[str, Any]:
 
 def _gguf_pair_identity(path: Path) -> tuple[str, str | None]:
     stem = path.stem
-    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", stem)
+    match = re.search(r"(?i)^(.*?)([_ .-])([hl]|high|low)$", stem)
     if not match:
         return stem.lower(), None
     family = match.group(1).rstrip("_ .-") or stem
-    return family.lower(), match.group(3).upper()
+    role_text = match.group(3).lower()
+    role = "H" if role_text in ("h", "high") else "L"
+    return family.lower(), role
 
 
 def _discover_gguf_sources(root: Path) -> list[Path]:
@@ -108,7 +110,7 @@ def _discover_gguf_sources(root: Path) -> list[Path]:
 
 def _gguf_display_name(path: Path) -> str:
     family, _role = _gguf_pair_identity(path)
-    match = re.search(r"(?i)^(.*?)([_ .-]?)([hl])$", path.stem)
+    match = re.search(r"(?i)^(.*?)([_ .-])([hl]|high|low)$", path.stem)
     return (match.group(1).rstrip("_ .-") if match else path.stem) or family
 
 

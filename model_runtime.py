@@ -89,8 +89,10 @@ def _tokens(config: Mapping[str, Any]) -> str:
 
 def _gguf_pair_role(path: Path) -> str | None:
     stem = path.stem
-    match = re.search(r"(?i)(?:[_ .-]?)([hl])$", stem)
-    return match.group(1).upper() if match else None
+    match = re.search(r"(?i)(?:[_ .-])([hl]|high|low)$", stem)
+    if match:
+        return "H" if match.group(1).lower() in ("h", "high") else "L"
+    return None
 
 
 def _source_tokens(source: str, name: str | None = None) -> tuple[str, dict[str, Any]]:

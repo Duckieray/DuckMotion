@@ -95,6 +95,34 @@ def test_gguf_readiness_blocks_missing_pair_without_probing_runtime(tmp_path, mo
     assert called is False
 
 
+def test_gguf_quantization_label_not_detected_as_pair_role(tmp_path):
+    """Q8H/Q8L quantization suffixes must not be mistaken for H/L pair roles."""
+    root = tmp_path / "models"
+    root.mkdir(parents=True)
+    solo = root / "wan22EnhancedNSFWSVICamera_nsfwFASTMOVEV2Q8H.gguf"
+    solo.write_bytes(b"gguf-solo")
+    assert _gguf_role(solo) is None
+    assert _gguf_pair_path(solo) is None
+
+    descriptor = describe_video_model(str(solo))
+    assert descriptor.architecture == "wan22"
+    assert descriptor.detection.get("pair_role") is None
+
+
+def test_gguf_pair_detection_with_high_low_words(tmp_path):
+    """Full-word 'high'/'low' pair roles must be detected like single H/L."""
+    root = tmp_path / "models"
+    root.mkdir(parents=True)
+    high = root / "Wan2.2_A14B_T2V_high.gguf"
+    low = root / "Wan2.2_A14B_T2V_low.gguf"
+    high.write_bytes(b"gguf-high")
+    low.write_bytes(b"gguf-low")
+    assert _gguf_role(high) == "H"
+    assert _gguf_role(low) == "L"
+    assert _gguf_pair_path(high) == low
+    assert _gguf_pair_path(low) == high
+
+
 def test_worker_injects_both_gguf_transformers_into_pipeline():
     root = Path(__file__).resolve().parents[1]
     text = (root / "wan_worker.py").read_text(encoding="utf-8")
