@@ -174,6 +174,7 @@ LTX25_CONVROT_TWO_STAGE_AV = ExecutionProfile(
             "KSamplerSelect",
             "ManualSigmas",
             "CLIPTextEncode",
+            "LoraLoaderModelOnly",
             "CreateVideo",
             "SaveVideo",
         }
