@@ -14,11 +14,15 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from job_runtime import VideoJobCoordinator
+from model_runtime import VideoModelDescriptor
+
 
 LTX_LORA_NAMESPACE = "ltx"
 SUPPORTED_SUFFIXES = {".safetensors"}
 MIN_LORA_WEIGHT = -4.0
 MAX_LORA_WEIGHT = 4.0
+LTX_LORA_BACKENDS = {"ltx25_isolated", "ltx25_convrot"}
 
 
 def _first_existing(candidates: Iterable[Path]) -> Path:
@@ -57,6 +61,17 @@ def resolve_webbduck_lora_root() -> Path:
 
 def ltx_lora_root() -> Path:
     return resolve_webbduck_lora_root() / LTX_LORA_NAMESPACE
+
+
+def supports_loras(descriptor: VideoModelDescriptor | None) -> bool:
+    """Return whether the installed runtime can apply LoRAs to this model."""
+    if descriptor is None:
+        return False
+    return bool(
+        descriptor.supported
+        and descriptor.architecture == "ltx25"
+        and descriptor.backend in LTX_LORA_BACKENDS
+    )
 
 
 def _load_registry_metadata(root: Path) -> dict[str, Any]:
@@ -102,12 +117,10 @@ def discover_ltx_loras() -> list[dict[str, Any]]:
 
 
 def public_lora_catalog(*, supported: bool) -> dict[str, Any]:
-    root = resolve_webbduck_lora_root()
     items = discover_ltx_loras() if supported else []
     return {
         "supported": bool(supported),
         "namespace": LTX_LORA_NAMESPACE,
-        "root": str(root),
         "count": len(items),
         "items": items,
     }
@@ -201,3 +214,21 @@ def materialize_lora_paths(raw: Any) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+class LoraAwareVideoJobCoordinator(VideoJobCoordinator):
+    """Video coordinator that persists validated adapter selection with a job."""
+
+    def _normalize_params(
+        self,
+        descriptor: VideoModelDescriptor,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        params = super()._normalize_params(descriptor, request)
+        loras = normalize_lora_selection(
+            request.get("loras"),
+            supported=supports_loras(descriptor),
+        )
+        if loras:
+            params["loras"] = loras
+        return params
