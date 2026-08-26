@@ -21,7 +21,7 @@ from runtime_paths import configure_default_runtime_env
 # installs should never need to export those variables manually.
 configure_default_runtime_env()
 
-from job_runtime import VideoJobCoordinator
+from lora_runtime import LoraAwareVideoJobCoordinator, public_lora_catalog, supports_loras
 from ltx_backend import ensure_registered as ensure_ltx_registered
 from ltx_convrot_backend import ensure_registered as ensure_ltx_convrot_registered
 from model_discovery import discover_video_models
@@ -34,7 +34,7 @@ from webbduck_media import recent_webbduck_images
 
 
 services = VideoRuntimeServices()
-job_coordinator = VideoJobCoordinator(services)
+job_coordinator = LoraAwareVideoJobCoordinator(services)
 
 
 def _register_installed_backends() -> None:
@@ -154,6 +154,11 @@ runtime_surfaces = VideoRuntimeSurfaces(
 )
 
 
+class LoraSelectionPayload(BaseModel):
+    name: str
+    weight: float = 1.0
+
+
 class GeneratePayload(BaseModel):
     image_path: str | None = None
     prompt: str
@@ -165,6 +170,7 @@ class GeneratePayload(BaseModel):
     num_inference_steps: int | None = None
     guidance_scale: float | None = None
     seed: int | None = None
+    loras: list[LoraSelectionPayload] | None = None
     # Optional generic I2V quality hint. Backends that advertise support through
     # public constraints may interpret model/identity/locked; others can ignore it.
     i2v_stability: str | None = None
@@ -197,6 +203,14 @@ def get_router(plugin_manifest: dict | None = None) -> APIRouter:
         # Discovery remains pure; this composition layer overlays privately
         # resolved recipe defaults/constraints before returning public models.
         return _public_model_catalog()
+
+    @router.get("/loras")
+    def loras() -> dict[str, Any]:
+        """List LoRAs applicable to the currently selected video model."""
+        config = services.load_config()
+        source = str(config.get("model_id_or_path") or "").strip()
+        descriptor = describe_video_model(source) if source else None
+        return public_lora_catalog(supported=supports_loras(descriptor))
 
     @router.get("/engine/runtime")
     def engine_runtime() -> dict[str, Any]:

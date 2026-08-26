@@ -11,6 +11,7 @@ import time
 import host_runtime
 from typing import Any, Callable
 
+from lora_runtime import materialize_lora_paths
 from ltx_convrot_assets import inspect_convrot_assets, read_json
 from ltx_convrot_quality import apply_quality_asset_policy
 from ltx_convrot_recipe import extract_execution_recipe
@@ -269,6 +270,7 @@ print(json.dumps(out))
                 else None
             ),
             "seed": seed,
+            "loras": materialize_lora_paths(request.get("loras")),
         }
         if not payload["prompt"]:
             raise ValueError("Prompt is required")

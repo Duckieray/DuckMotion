@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import os
 from pathlib import Path
 import sys
@@ -51,6 +52,7 @@ import ltx_convrot_worker as recipe_worker
 
 LOW_VRAM_GB = 18.0
 MID_VRAM_GB = 28.0
+_ACTIVE_LORAS: list[dict[str, Any]] = []
 
 
 def resolve_memory_policy(total_vram_gb: float, mode: str | None = None) -> dict[str, Any]:
@@ -276,9 +278,75 @@ def _prepare_comfy(output_dir: Path, assets: dict[str, str]):
     recipe_worker._add_asset_folder(folder_paths, "latent_upscale_models", assets["latent_upscaler"])
     recipe_worker._add_asset_folder(folder_paths, "vae", assets["video_vae"])
     recipe_worker._add_asset_folder(folder_paths, "vae", assets["audio_vae"])
+    for lora in _ACTIVE_LORAS:
+        recipe_worker._add_asset_folder(folder_paths, "loras", lora["path"])
 
     asyncio.run(nodes.init_extra_nodes(init_custom_nodes=False, init_api_nodes=False))
     return nodes
+
+
+def _validated_loras(request: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = request.get("loras") or []
+    if not isinstance(raw, list):
+        raise ValueError("ConvRot LoRAs must be a list")
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("ConvRot LoRA entries must be objects")
+        path = Path(str(item.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or path.suffix.lower() != ".safetensors":
+            raise ValueError(f"LTX LoRA file is missing: {path}")
+        result.append(
+            {
+                "name": str(item.get("name") or path.stem),
+                "path": str(path),
+                "weight": float(item.get("weight", 1.0)),
+            }
+        )
+    return result
+
+
+def _install_lora_dispatch() -> None:
+    """Apply selected adapters immediately after the ConvRot diffusion model loads."""
+    original_call_node = recipe_worker._call_node
+    if getattr(original_call_node, "_duckmotion_lora_dispatch", False):
+        return
+
+    def call_node(nodes_module, node_name: str, **kwargs):
+        value = original_call_node(nodes_module, node_name, **kwargs)
+        if node_name != "UNETLoader" or not _ACTIVE_LORAS:
+            return value
+
+        model = value[0]
+        for lora in _ACTIVE_LORAS:
+            model = original_call_node(
+                nodes_module,
+                "LoraLoaderModelOnly",
+                model=model,
+                lora_name=Path(lora["path"]).name,
+                strength_model=float(lora["weight"]),
+            )[0]
+        return (model, *value[1:])
+
+    call_node._duckmotion_lora_dispatch = True
+    recipe_worker._call_node = call_node
+
+
+def _record_lora_metadata(output_dir: Path, loras: list[dict[str, Any]]) -> None:
+    meta_path = output_dir / "meta.json"
+    if not meta_path.exists():
+        return
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(meta, dict):
+        return
+    meta["loras"] = [
+        {"name": str(item["name"]), "weight": float(item["weight"])}
+        for item in loras
+    ]
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
 def _install_full_inference_run_context() -> None:
@@ -298,8 +366,15 @@ def _install_full_inference_run_context() -> None:
     def run_inference(request, output_dir):
         import torch
 
-        with torch.inference_mode():
-            return original_run(request, output_dir)
+        global _ACTIVE_LORAS
+        _ACTIVE_LORAS = _validated_loras(request)
+        try:
+            with torch.inference_mode():
+                result = original_run(request, output_dir)
+            _record_lora_metadata(Path(output_dir), _ACTIVE_LORAS)
+            return result
+        finally:
+            _ACTIVE_LORAS = []
 
     run_inference._duckmotion_full_inference_run = True
     recipe_worker._run = run_inference
@@ -354,6 +429,7 @@ def main() -> int:
     # Keep profile semantics in one implementation while injecting only the
     # embedded-Comfy runtime composition points.
     recipe_worker._prepare_comfy = _prepare_comfy
+    _install_lora_dispatch()
     _install_full_inference_run_context()
     try:
         return recipe_worker.main()
