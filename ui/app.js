@@ -791,9 +791,10 @@
     const meta = item?.meta || {};
     const modelName = meta?.model?.name || (typeof meta.model === "string" ? meta.model : "Video model");
     const prompt = meta?.params?.prompt || meta?.prompt || "";
-    const poster = item.poster ? ` poster="${escapeHtml(item.poster)}"` : "";
+    const videoSrc = item.video ? `${API_BASE}${item.video}` : "";
+    const posterAttr = item.poster ? ` poster="${escapeHtml(`${API_BASE}${item.poster}`)}"` : "";
     return `<article class="gallery-card">
-      <video controls preload="metadata"${poster} src="${escapeHtml(item.video || "")}"></video>
+      <video controls preload="metadata"${posterAttr} src="${escapeHtml(videoSrc)}"></video>
       <div class="gallery-card-copy"><strong>${escapeHtml(modelName)}</strong><span>${escapeHtml(prompt)}</span></div>
     </article>`;
   }
