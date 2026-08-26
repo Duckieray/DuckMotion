@@ -82,3 +82,12 @@ def release_gpu_lease(**kwargs: Any) -> Any:
     except Exception as exc:
         raise RuntimeError(f"WebbDuck GPU lease service unavailable: {exc}") from exc
     return release(**kwargs)
+
+
+def lease_heartbeat(**kwargs: Any) -> bool:
+    _ensure_webbduck_root()
+    try:
+        from core.gpu_lease import lease_heartbeat as heartbeat
+    except Exception:
+        return False
+    return bool(heartbeat(**kwargs))
