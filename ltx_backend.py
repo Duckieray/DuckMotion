@@ -59,6 +59,7 @@ class LTX25IsolatedBackend(VideoBackend):
                 ("diffusers.pipelines.ltx2.utils", "DISTILLED_SIGMA_VALUES"),
                 ("diffusers.pipelines.ltx2.utils", "STAGE_2_DISTILLED_SIGMA_VALUES"),
                 ("diffusers.utils", "encode_video"),
+                ("peft", "PeftModel"),
             ),
         )
         self._readiness_checked_at = now
