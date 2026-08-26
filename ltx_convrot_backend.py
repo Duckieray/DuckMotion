@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
-import host_runtime
 from typing import Any, Callable
 
 from ltx_convrot_assets import inspect_convrot_assets, read_json
@@ -303,7 +302,6 @@ print(json.dumps(out))
                     env=env,
                 )
                 started = time.monotonic()
-                heartbeat_tick = 0
                 while proc.poll() is None:
                     if is_cancelled is not None and is_cancelled():
                         proc.terminate()
@@ -317,12 +315,6 @@ print(json.dumps(out))
                         raise RuntimeError(
                             f"LTX ConvRot runtime timed out after {int(timeout_seconds)} seconds"
                         )
-                    heartbeat_tick += 1
-                    if heartbeat_tick % 10 == 0:
-                        try:
-                            host_runtime.lease_heartbeat(token=kwargs.get("lease_token") or "")
-                        except Exception:
-                            pass
                     time.sleep(0.5)
 
             logs = (

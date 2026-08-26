@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import host_runtime
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -186,7 +185,6 @@ class WanDiffusersBackend(VideoBackend):
                     text=True,
                 )
                 started = time.monotonic()
-                heartbeat_tick = 0
                 while proc.poll() is None:
                     if is_cancelled is not None and is_cancelled():
                         proc.terminate()
@@ -200,12 +198,6 @@ class WanDiffusersBackend(VideoBackend):
                         raise RuntimeError(
                             f"Wan runtime timed out after {int(timeout_seconds)} seconds"
                         )
-                    heartbeat_tick += 1
-                    if heartbeat_tick % 10 == 0:
-                        try:
-                            host_runtime.lease_heartbeat(token=kwargs.get("lease_token") or "")
-                        except Exception:
-                            pass
                     time.sleep(0.5)
 
             logs = (

@@ -62,6 +62,3 @@ class VideoRuntimeServices:
 
     def release_gpu_lease(self, **kwargs: Any) -> Any:
         return host_runtime.release_gpu_lease(**kwargs)
-
-    def lease_heartbeat(self, **kwargs: Any) -> bool:
-        return host_runtime.lease_heartbeat(**kwargs)
