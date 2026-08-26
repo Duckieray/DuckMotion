@@ -60,6 +60,39 @@ def _configure_main_pipeline(pipe, device: str, total_vram_gb: float) -> str:
     return "none"
 
 
+def _apply_loras(pipe, raw_loras) -> list[dict]:
+    """Load selected LTX adapters before pipeline device/offload hooks are installed."""
+    if not raw_loras:
+        return []
+    if not isinstance(raw_loras, list):
+        raise ValueError("LTX LoRAs must be a list")
+
+    adapter_names: list[str] = []
+    adapter_weights: list[float] = []
+    applied: list[dict] = []
+    for index, item in enumerate(raw_loras):
+        if not isinstance(item, dict):
+            raise ValueError("LTX LoRA entries must be objects")
+        path = Path(str(item.get("path") or "")).expanduser().resolve()
+        if not path.is_file() or path.suffix.lower() != ".safetensors":
+            raise ValueError(f"LTX LoRA file is missing: {path}")
+        name = str(item.get("name") or path.stem).strip() or path.stem
+        weight = float(item.get("weight", 1.0))
+        adapter_name = f"duckmotion_lora_{index}"
+        pipe.load_lora_weights(
+            str(path.parent),
+            weight_name=path.name,
+            adapter_name=adapter_name,
+        )
+        adapter_names.append(adapter_name)
+        adapter_weights.append(weight)
+        applied.append({"name": name, "weight": weight})
+
+    if adapter_names:
+        pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+    return applied
+
+
 def _run(request: dict, output_dir: Path) -> dict:
     import torch
     from diffusers import (
@@ -99,6 +132,7 @@ def _run(request: dict, output_dir: Path) -> dict:
     except TypeError:
         pipe = pipeline_cls.from_pretrained(model_path, torch_dtype=dtype, low_cpu_mem_usage=True)
 
+    applied_loras = _apply_loras(pipe, request.get("loras"))
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
     offload = _configure_main_pipeline(pipe, "cuda", total_vram_gb)
     pipe.vae.enable_tiling()
@@ -202,6 +236,7 @@ def _run(request: dict, output_dir: Path) -> dict:
         "audio": True,
         "operation": "image_to_video" if input_image else "text_to_video",
         "prompt": prompt,
+        "loras": applied_loras,
         "sampling": "distilled_two_stage",
         "stage1_sigma_count": len(DISTILLED_SIGMA_VALUES),
         "stage2_sigma_count": len(STAGE_2_DISTILLED_SIGMA_VALUES),
