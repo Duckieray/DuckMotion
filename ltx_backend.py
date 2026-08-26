@@ -12,6 +12,7 @@ import host_runtime
 from pathlib import Path
 from typing import Any, Callable
 
+from lora_runtime import materialize_lora_paths
 from model_runtime import VideoBackend, VideoModelDescriptor, backend_resolver
 from runtime_probe import probe_python_runtime
 
@@ -93,6 +94,7 @@ class LTX25IsolatedBackend(VideoBackend):
             "num_frames": int(request.get("num_frames") or defaults.get("num_frames") or 121),
             "fps": float(request.get("fps") or defaults.get("fps") or 24),
             "seed": seed,
+            "loras": materialize_lora_paths(request.get("loras")),
         }
         if not payload["prompt"]:
             raise ValueError("Prompt is required")
