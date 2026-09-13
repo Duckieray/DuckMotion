@@ -1,0 +1,116 @@
+import json
+from pathlib import Path
+
+from model_discovery import (
+    discover_hf_video_models,
+    discover_local_video_models,
+    discover_video_models,
+)
+
+
+def _model_index(root: Path, class_name: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "model_index.json").write_text(
+        json.dumps({"_class_name": class_name}),
+        encoding="utf-8",
+    )
+
+
+def test_local_discovery_finds_wan_and_ltx_without_engine_grouping(tmp_path):
+    wan = tmp_path / "checkpoint" / "wan" / "Wan2.2-I2V-A14B-Diffusers"
+    _model_index(wan, "WanImageToVideoPipeline")
+
+    ltx = tmp_path / "checkpoint" / "ltx2.5" / "LTX-2.5-Diffusers"
+    _model_index(ltx, "LTX2ImageToVideoPipeline")
+
+    items = discover_local_video_models([tmp_path / "checkpoint"])
+    by_name = {item["name"]: item for item in items}
+
+    assert by_name["Wan2.2-I2V-A14B-Diffusers"]["capabilities"]["image_to_video"] is True
+    assert by_name["Wan2.2-I2V-A14B-Diffusers"]["supported"] is True
+    assert by_name["LTX-2.5-Diffusers"]["capabilities"]["text_to_video"] is True
+    assert by_name["LTX-2.5-Diffusers"]["capabilities"]["audio_output"] is True
+    assert by_name["LTX-2.5-Diffusers"]["constraints"]["generation_stages"] == 2
+    assert by_name["LTX-2.5-Diffusers"]["supported"] is True
+    assert "architecture" not in by_name["LTX-2.5-Diffusers"]
+    assert "backend" not in by_name["LTX-2.5-Diffusers"]
+
+
+def test_local_discovery_groups_wan_gguf_h_l_pair_as_one_model(tmp_path):
+    root = tmp_path / "checkpoint" / "wan" / "Wan2.2-Enhanced-NSFW-I2V-T2V"
+    root.mkdir(parents=True)
+    high = root / "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_H.gguf"
+    low = root / "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8_L.gguf"
+    high.write_bytes(b"gguf-high")
+    low.write_bytes(b"gguf-low")
+
+    items = discover_local_video_models([tmp_path / "checkpoint"])
+    gguf_items = [item for item in items if str(item["source"]).endswith(".gguf")]
+    assert len(gguf_items) == 1
+    item = gguf_items[0]
+    assert item["source"] == str(high.resolve())
+    assert item["name"] == "Wan2.2_Enhanced_NSFW_I2V_T2V_Q8"
+    assert item["capabilities"]["text_to_video"] is True
+    assert item["capabilities"]["image_to_video"] is True
+    assert item["capabilities"]["source_image_required"] is False
+    assert item["supported"] is True
+    assert "backend" not in item
+    assert "architecture" not in item
+
+
+def test_hf_cache_discovers_lightricks_ltx25_snapshot(tmp_path):
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--Lightricks--LTX-2.5-Diffusers" / "snapshots" / "revision123"
+    _model_index(snapshot, "LTX2ImageToVideoPipeline")
+
+    items = discover_hf_video_models(cache)
+    assert len(items) == 1
+    item = items[0]
+    assert item["name"] == "Lightricks/LTX-2.5-Diffusers"
+    assert item["repo_id"] == "Lightricks/LTX-2.5-Diffusers"
+    assert item["capabilities"]["image_to_video"] is True
+    assert item["constraints"]["dimension_multiple"] == 64
+    assert item["constraints"]["generation_stages"] == 2
+    assert item["defaults"]["width"] == 1536
+    assert item["supported"] is True
+
+
+def test_hf_cache_uses_repo_identity_to_detect_wan_ti2v_in_revision_snapshot(tmp_path):
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers" / "snapshots" / "8f53deadbeef"
+    _model_index(snapshot, "WanPipeline")
+
+    items = discover_hf_video_models(cache)
+    assert len(items) == 1
+    item = items[0]
+    assert item["repo_id"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    assert item["capabilities"]["text_to_video"] is True
+    assert item["capabilities"]["image_to_video"] is False
+    assert item["capabilities"]["source_image_required"] is False
+    assert item["defaults"]["width"] == 1280
+    assert item["defaults"]["height"] == 704
+    assert item["defaults"]["num_frames"] == 121
+    assert item["defaults"]["fps"] == 24
+    assert item["defaults"]["num_inference_steps"] == 50
+    assert item["defaults"]["guidance_scale"] == 5.0
+    assert item["supported"] is True
+
+
+def test_hf_cache_ignores_non_video_diffusers_models(tmp_path):
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--black-forest-labs--FLUX.1-dev" / "snapshots" / "revision123"
+    _model_index(snapshot, "FluxPipeline")
+    assert discover_hf_video_models(cache) == []
+
+
+def test_unified_discovery_includes_configured_remote_model(tmp_path):
+    payload = discover_video_models(
+        {"model_id_or_path": "Wan-AI/Wan2.2-I2V-A14B-Diffusers"},
+        roots=[tmp_path / "missing"],
+        hf_cache=tmp_path / "hub",
+    )
+    assert payload["count"] == 1
+    item = payload["items"][0]
+    assert item["location"] == "configured"
+    assert item["capabilities"]["image_to_video"] is True
+    assert item["supported"] is True

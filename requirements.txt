@@ -1,14 +1,10 @@
-# DuckMotion plugin runtime dependencies (install into the same environment as WebbDuck)
+# DuckMotion plugin-host dependencies
 #
-# WebbDuck already provides FastAPI/PyTorch/Pillow in its normal environment.
-# This file focuses on the additional Wan2.2 diffusers/video runtime pieces.
-
-diffusers>=0.35.0
-transformers>=4.45.0
-accelerate>=0.33.0
-safetensors>=0.4.5
-huggingface_hub>=0.25.0
-gguf>=0.10.0
-imageio>=2.34.0
-imageio-ffmpeg>=0.5.1
-sentencepiece>=0.2.0
+# DuckMotion's model runtimes are process-isolated. WebbDuck already supplies
+# FastAPI/Pydantic/Pillow for the plugin host, so architecture-specific ML
+# packages do not belong in this environment.
+#
+# Install model runtime environments separately from:
+#   runtime_requirements/wan.txt
+#   runtime_requirements/ltx25.txt
+# and point DUCKMOTION_WAN_PYTHON / DUCKMOTION_LTX_PYTHON at those interpreters.
