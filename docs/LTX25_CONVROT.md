@@ -1,6 +1,6 @@
 # LTX-2.5 INT8 ConvRot
 
-Status: **format/runtime/profile/provenance contracts available; real-model GPU smoke validation pending**
+Status: **format/runtime/profile/provenance contracts implemented; smoke reports on an RTX 5070 Ti cover earlier ConvRot canaries but predate the native two-stage I2V topology rework**
 
 DuckMotion treats LTX-2.5 INT8 ConvRot as a checkpoint **format**, not as a model
 brand or a sampling recipe. Users select the checkpoint normally; there is no
@@ -80,6 +80,26 @@ DuckMotion imports that checkout directly as a Python library. It does **not**:
 
 `tools/setup.py` repairs this runtime-owned checkout even when package
 reinstallation is skipped.
+
+The registered profile worker entrypoint is
+`ltx_convrot_v3_runtime_worker.py`. It installs Comfy's V3 class-clone and
+hidden-input binding for direct node calls, then delegates to
+`ltx_convrot_runtime_worker.py`, which owns VRAM-tiered memory policy and wraps
+the whole recipe run in one `torch.inference_mode()` context before running the
+recipe topology in `ltx_convrot_worker.py`.
+
+Memory policy is auto-selected from total VRAM (`resolve_memory_policy`) and can
+be overridden with `DUCKMOTION_LTX_CONVROT_MEMORY`:
+
+```text
+< 18 GB  conservative -- DynamicVRAM, 1.5 GB headroom, sub-quadratic attention
+< 28 GB  balanced     -- DynamicVRAM, 0.75 GB headroom, PyTorch SDPA
+>= 28 GB performance  -- native Comfy attention with DynamicVRAM disabled
+```
+
+The conservative tiers avoid Comfy's power-of-two split-attention fallback,
+which would otherwise ask CUDA for tens of GiB for the full-resolution AV token
+sequence. Memory policy never rewrites sampler/sigma/conditioning semantics.
 
 ## Provenance resolution
 
@@ -182,13 +202,22 @@ The current two-stage AV execution profile owns trusted standard sources for:
 
 - `gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors` from
   `Lightricks/LTX-2.5`;
-- `ltx-2.3-spatial-upscaler-x2-1.1.safetensors` from `Lightricks/LTX-2.3`;
-- `ltx-2.5-video-vae-conv-bf16.safetensors` from `Lightricks/LTX-2.5`;
+- `ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors` from
+  `Lightricks/LTX-2.5`;
+- `ltx-2.5-video-vae-bf16.safetensors` from `Lightricks/LTX-2.5`;
 - `ltx-2.5-audio-vae-bf16.safetensors` from `Lightricks/LTX-2.5`.
 
 A profile default can fill a missing asset role, or a missing source URL for the
 same standard filename. It **cannot** replace a differently named custom asset
 from a recipe.
+
+The profile's quality-first policy (`ltx_convrot_quality.py`) additionally
+upgrades only exact legacy standard filenames — the lightweight
+`ltx-2.5-video-vae-conv-bf16.safetensors` VAE and the older
+`ltx-2.3-spatial-upscaler-x2-1.1.safetensors` upscaler — to the current quality
+defaults above. A differently named custom companion asset is never replaced.
+Advanced deployments that need the literal legacy declarations can set
+`DUCKMOTION_LTX_CONVROT_ASSET_POLICY=recipe`.
 
 Missing supported assets are fetched through the owning runtime's normal
 `huggingface_hub` client. Gated repositories remain gated: DuckMotion does not
@@ -207,21 +236,29 @@ distinctions before model loading.
 final resolution: 1152x768
 fps:              24
 frames:           241
-CFG:              1.0
-sampler:          Euler
+steps:            11 (8 first-pass + 3 refinement transitions)
+CFG:              1.0 (video and audio)
+sampler:          euler_ancestral (both stages)
+stage-two noise:  fixed at seed 42
 ```
 
 These are **profile defaults**, not ConvRot-format defaults. Checkpoint discovery
 therefore does not inject them merely because a file is INT8 ConvRot.
+
+A user-supplied Guidance value is honored and maps to both the video and audio
+CFG scales. The sampler and sigma schedules are locked to the model-owned
+two-stage contract; sampling is not a generic arbitrary-step UI mode.
 
 Final dimensions are snapped to multiples of 64 and frame counts to `8k+1`.
 Stage one runs at half final width/height.
 
 ### Conditioning
 
-The current profile uses positive LTX/Gemma conditioning and
-`ConditioningZeroOut(positive)` for the negative path, followed by
-`LTXVConditioning` at the requested frame rate.
+The current profile uses `LTXV`/Gemma text conditioning. The positive path is
+`CLIPTextEncode` on the user prompt; the negative path is `CLIPTextEncode` on the
+allow-listed recipe `negative_prompt`, followed by `LTXVConditioning` at the
+requested frame rate. The recipe default negative prompt is
+`pc game, console game, video game, cartoon, childish, ugly`.
 
 For I2V, the source image is resized with Lanczos to a 1536-pixel longer edge and
 processed with:
@@ -230,7 +267,10 @@ processed with:
 LTXVPreprocess(img_compression=18)
 ```
 
-The stage-one image guide strength is `0.7`.
+The stage-one Inplace guide strength defaults to `0.7` and the upscaled
+stage-two Inplace pass to `1.0`. `LTXVAddGuide` reference conditioning is used
+only in the explicit `locked` stability mode; normal I2V uses
+`LTXVImgToVideoInplace` first-frame/noise-mask conditioning at each stage.
 
 ### Stage one
 
@@ -250,11 +290,15 @@ After sampling, `LTXVSeparateAVLatent` separates video and audio again.
 The current profile applies:
 
 ```text
-LTXVCropGuides
-  -> LTXVLatentUpsampler
-  -> LatentUpscaleBy(upscale_method="bicubic", scale_by=0.5)
-  -> LTXVImgToVideoInplace(strength=1.0)  # I2V only
+LTXVLatentUpsampler (learned 2x)        -- native stage-two refinement entry
+LTXVImgToVideoInplace(strength=1.0)     # default stage-two Inplace; AddGuide first/last for locked
 ```
+
+The learned LTX-2.5 spatial upsampler is the **only** stage transition. There is
+no generic `LatentUpscaleBy(0.5)` after it — reversing the refinement stage's
+spatial gain would cancel the upscale. In `locked` stability mode, guide tokens
+are cropped with `LTXVCropGuides` before the upsampler and the first/last-frame
+references are rebuilt at full resolution.
 
 The upscaled video latent is recombined with audio for the second pass.
 
@@ -264,8 +308,17 @@ Low-noise sigma schedule:
 0.85, 0.7250, 0.4219, 0.0
 ```
 
-DuckMotion's single public seed deterministically derives the second noise stream
-as `seed + 1` modulo uint64.
+The stage-two noise stream follows the normalized recipe `stage2_noise_policy`:
+
+```text
+same_seed  -> stage2 seed == public seed
+increment  -> stage2 seed == (public seed + 1) modulo 2^64
+fixed      -> stage2 seed == recipe stage2_fixed_seed (profile default 42)
+```
+
+The profile default is `fixed` at seed `42`. The `identity` and `locked` I2V
+stability modes override the policy to `same_seed` so both Inplace passes reuse
+the public seed.
 
 ### Decode and output
 
@@ -315,17 +368,25 @@ Unit/contract coverage protects:
 - strong checkpoint provenance caching/invalidation;
 - exact-SHA provenance validation and ambiguity refusal;
 - explicit DuckMotion manifests;
-- exported-workflow adaptation;
+- authoritative exported-workflow graph parsing (no stale `extra.prompt` mixing);
+- execution-setting normalization and fidelity (sampler/sigma/noise-policy);
+- the quality-first asset upgrade policy (exact legacy names only);
+- `model` / `identity` / `locked` I2V stability semantics;
 - generic asset-provider iteration;
 - arbitrary shared-model layouts;
 - no brand-specific recipe table;
 - ambiguous profile/recipe evidence refusing to guess;
+- VRAM-tiered memory policy and Comfy-embedded DynamicVRAM activation;
+- the V3 hidden-context dispatch and whole-run inference context;
 - the current two-stage AV operation ordering and constants.
 
 `tools/run_hardware_smoke.py` identifies ConvRot models using readiness
 `source_format` metadata, not model names, and obtains heavy/default dimensions
-from the resolved profile.
+from the resolved profile. It writes JSON reports under `smoke_reports/`.
 
-A passing test suite is **not** hardware validation. Real T2V/I2V generation still
-has to pass on target hardware with an actual checkpoint, resolved recipe/assets,
-synchronized audio/video, successful teardown, and acceptable memory behavior.
+A passing test suite is **not** hardware validation. Local smoke reports include
+real ConvRot canary generations on an RTX 5070 Ti (August 2026), but they predate
+the native two-stage I2V topology, memory-safe attention, and quality-asset
+changes. Full T2V/I2V generation for the current topology still has to pass on
+target hardware with an actual checkpoint, resolved recipe/assets, synchronized
+audio/video, successful teardown, and acceptable memory behavior.

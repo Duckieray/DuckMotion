@@ -1,9 +1,10 @@
 # DuckMotion Hardware Smoke Matrix
 
-Status: **preparation / no model-load claim yet**
+Status: **matrix defined; local reports under `smoke_reports/` cover earlier ConvRot canaries on the RTX 5070 Ti but predate the native two-stage I2V topology rework**
 
 Target host: NVIDIA RTX 5070 Ti 16 GB. Runtime and browser architecture are
-model-driven; this document defines the first real Wan/LTX hardware validation.
+model-driven; this document defines the Wan/LTX hardware validation matrix and
+its current status.
 
 ## 1. Prepare DuckMotion
 
@@ -172,7 +173,10 @@ python tools/run_hardware_smoke.py \
 ```
 
 The payload for that row is built from `runtime.profile_defaults` rather than a
-model-name check.
+model-name check. The runner also accepts explicit public overrides
+(`--wan-5b-model`, `--wan-i2v-model`, `--ltx-model`, `--ltx-convrot-model`)
+when auto-detection is not desired, and writes JSON reports to `smoke_reports/`
+by default.
 
 The Wan row names predate restored GGUF discovery; the selected public
 model/source determines execution. GGUF execution itself must not depend on UI or
@@ -207,12 +211,18 @@ A row additionally requires:
 - pinned Comfy core imports without starting a Comfy server;
 - all nodes required by the **selected profile** available;
 - the selected profile worker receives profile-owned defaults;
+- memory stays bounded for the full-resolution AV token sequence (16 GB-class
+  runs must use the sub-quadratic/SDPA attention policy, not the split-attention
+  fallback);
 - synchronized decoded audio/video in the output artifact;
 - successful worker teardown and GPU lease release.
 
 For the current `ltx25_convrot_two_stage_av` profile, validation additionally
 checks its fixed two-stage AV sigma/guide/upscale/decode contract documented in
-`docs/LTX25_CONVROT.md`.
+`docs/LTX25_CONVROT.md`. The stage transition must be the learned 2x spatial
+upscaler directly into refinement (no generic 0.5x latent resize), and `locked`
+I2V stability must use the `LTXVAddGuide` first/last reference path with
+`LTXVCropGuides` around the upscaler.
 
 ## 6. Failure classification
 

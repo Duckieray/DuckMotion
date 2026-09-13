@@ -52,22 +52,39 @@ folder a checkpoint uses.
 - `model_provenance.py`: strong checkpoint fingerprinting, provenance registry/cache.
 - `provenance_providers.py`: built-in provenance-provider composition.
 - `civitai_provenance.py`: SHA256 Civitai provenance provider; setup-time only.
+- `provider_credentials.py`: shared WebbDuck credentials contract for optional gated access.
 - `model_recipes.py`: execution-profile contracts and registry.
 - `model_asset_providers.py`: normalized support-asset provider registry.
 - `job_runtime.py`: generic job lifecycle and backend invocation.
 - `host_runtime.py`: architecture-neutral WebbDuck runtime/GPU lease bridge.
 - `runtime_services.py`: storage + host-runtime composition.
 - `runtime_surfaces.py`: generic health/config/status contracts.
+- `runtime_paths.py`: deterministic runtime/interpreter path resolution.
+- `runtime_probe.py`: non-loading runtime readiness probing.
 - `storage_runtime.py`: config/job/staging/gallery persistence.
 - `storage_api.py`: generic job/staging/gallery routes.
+- `webbduck_media.py`: recent WebbDuck media for UI handoffs.
 - `wan_backend.py` / `wan_worker.py`: isolated Wan adapter/runtime.
 - `ltx_backend.py` / `ltx_worker.py`: isolated standard LTX-2.5 adapter/runtime.
 - `ltx_convrot_backend.py`: ConvRot format backend; resolves execution profiles.
-- `ltx_convrot_worker.py`: current `ltx25_convrot_two_stage_av` worker.
+- `ltx_convrot_assets.py`: ConvRot format detection + asset reconciliation.
+- `ltx_convrot_recipe.py`: validated `duckmotion_recipe`/workflow execution-setting adapter.
+- `ltx_convrot_quality.py`: quality-first support-asset upgrade policy.
+- `ltx_convrot_worker.py`: `ltx25_convrot_two_stage_av` recipe node ordering.
+- `ltx_convrot_runtime_worker.py`: VRAM policy + embedded-Comfy inference-context launcher.
+- `ltx_convrot_v3_runtime_worker.py`: registered profile worker; Comfy V3 hidden-context dispatch.
+- `lora_runtime.py`: shared WebbDuck LoRA discovery/selection (`ltx` namespace).
+- `ltx_i2v_stability.py`: model/identity/locked I2V reference-stability policy.
+- `tools/setup.py`: one-command runtime/asset/plugin setup.
+- `tools/doctor.py`: non-loading readiness diagnostics.
+- `tools/prepare_model_runtimes.py`: isolated runtime install/repair.
 - `tools/prepare_model_assets.py`: generic provenance + support-asset setup.
+- `tools/install_webbduck_plugin.py`: lower-level plugin installer.
+- `tools/run_hardware_smoke.py`: API-driven hardware smoke runner.
 - `runtime_requirements/`: model-runtime-specific Python environments.
 - `ui/`: capability-driven browser UI.
 - `tests/`: focused contract/runtime tests.
+- `smoke_reports/`: local hardware-smoke JSON reports (kept out of git).
 
 The former monolithic `backend.py` is intentionally deleted. Do not recreate a
 new architecture-specific application module under another name.
@@ -186,17 +203,39 @@ The current profile is `ltx25_convrot_two_stage_av`. Its implementation was
 audited from a REDGraft workflow, making REDGraft a compatibility/test fixture
 rather than the backend identity.
 
+The profile worker entrypoint is `ltx_convrot_v3_runtime_worker.py` (Comfy V3
+hidden-context dispatch), which delegates to `ltx_convrot_runtime_worker.py`
+(VRAM-tiered memory policy plus a whole-run inference context), which runs the
+recipe topology in `ltx_convrot_worker.py`.
+
+The profile owns a quality-first asset policy
+(`ltx_convrot_quality.py`): it upgrades only exact known legacy standard
+filenames (the lightweight Conv VAE and the older spatial upscaler) to the
+current LTX-2.5 quality defaults. A differently named custom recipe asset is
+never replaced. `DUCKMOTION_LTX_CONVROT_ASSET_POLICY=recipe` disables the
+upgrade for advanced deployments.
+
 A future unrelated ConvRot checkpoint may reuse the same profile or register a
 new profile. Adding a new profile should not require a new backend or UI mode.
 
 Companion recipes are declarative only. Supported adapters may consume a native
 `duckmotion_recipe` manifest or structural evidence from an exported workflow,
-but DuckMotion never executes arbitrary companion workflow JSON.
+but DuckMotion never executes arbitrary companion workflow JSON. Missing or
+malformed settings fall back to the audited profile defaults (`euler_ancestral`
+sampler, the published two-stage sigma schedules, and a stage-two noise policy
+of `fixed` with seed `42`; user guidance maps to both video and audio CFG).
 
 If a companion is absent locally, setup may recover public JSON sidecars through
 strong hash provenance. The current Civitai provider uses the public model-version
 by-SHA256 endpoint, verifies that the returned version echoes the exact SHA256,
 and caches only small JSON candidates. It never re-downloads the selected model.
+
+Normal I2V in the current topology uses native `LTXVImgToVideoInplace`
+first-frame/noise-mask conditioning at each stage. `LTXVAddGuide` reference
+tokens are reserved for the explicit `locked` stability mode
+(`ltx_i2v_stability.py`); `identity` strengthens both Inplace passes and reuses
+the stage-two seed. Mode support is a profile constraint
+(`i2v_stability_modes`), never a brand rule.
 
 ## WebbDuck Integration Rules
 
@@ -220,17 +259,35 @@ pytest -v \
   tests/test_model_provenance.py \
   tests/test_civitai_provenance.py \
   tests/test_provenance_recipe_integration.py \
-  tests/test_runtime_readiness.py \
-  tests/test_job_runtime.py \
-  tests/test_wan_backend.py \
-  tests/test_ltx_backend.py \
-  tests/test_ltx_convrot.py \
+  tests/test_provider_credentials.py \
   tests/test_recipe_driven_assets.py \
   tests/test_profile_asset_defaults.py \
+  tests/test_runtime_readiness.py \
+  tests/test_effective_model_catalog.py \
+  tests/test_runtime_surfaces.py \
+  tests/test_storage_runtime.py \
+  tests/test_job_runtime.py \
+  tests/test_wan_backend.py \
+  tests/test_wan_gguf.py \
+  tests/test_backend_memory_policy.py \
+  tests/test_ltx_backend.py \
+  tests/test_ltx_convrot.py \
+  tests/test_convrot_recipe_fidelity.py \
+  tests/test_convrot_runtime_paths.py \
+  tests/test_convrot_memory_policy.py \
+  tests/test_convrot_v3_dispatch.py \
+  tests/test_worker_profile_contract.py \
+  tests/test_ltx_i2v_stability.py \
+  tests/test_lora_runtime.py \
+  tests/test_capability_ui.py \
   tests/test_prepare_model_runtimes.py \
   tests/test_simple_bootstrap.py \
-  tests/test_backend_memory_policy.py \
   tests/test_plugin_backend.py \
+  tests/test_plugin_installer.py \
+  tests/test_webbduck_plugin_installer.py \
+  tests/test_webbduck_media_urls.py \
+  tests/test_hardware_smoke_runner.py \
+  tests/test_execution_recipe_docs.py \
   tests/test_legacy_backend_removed.py
 ```
 

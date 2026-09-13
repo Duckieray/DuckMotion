@@ -1,6 +1,6 @@
 # Model-Driven Video Architecture
 
-Status: **runtime and capability-driven UI implemented; real-model smoke validation pending**
+Status: **runtime and capability-driven UI implemented; ConvRot canary smoke reports exist on an RTX 5070 Ti but predate the native two-stage I2V topology rework**
 
 DuckMotion follows the same checkpoint-first rule as WebbDuck:
 
@@ -306,7 +306,8 @@ LTX-2.5 publicly exposes:
 
 - text-to-video;
 - image-to-video with optional source image;
-- synchronized audio output.
+- synchronized audio output;
+- model-family LoRA adapters from the shared WebbDuck `lora/ltx/` namespace.
 
 The standard isolated worker follows the distilled two-stage path:
 
@@ -339,10 +340,13 @@ It owns:
 
 - its worker entrypoint;
 - required pinned-Comfy nodes;
+- model-family LoRA roles (`LoraLoaderModelOnly`);
 - text encoder / latent upscaler / video VAE / audio VAE asset roles and trusted
   standard sources;
 - 1152x768 / 241-frame / 24-fps defaults;
-- the fixed two-stage AV sampling, guide, upscale, decode, and output contract.
+- the fixed two-stage AV sampling, guide, upscale, decode, and output contract;
+- `i2v_stability_modes` constraint (`model` / `identity` / `locked`) surfacing
+  optional reference-stability controls.
 
 That implementation was audited from a REDGraft workflow, making REDGraft a
 reference fixture rather than a runtime identity. A future unrelated ConvRot
@@ -371,8 +375,12 @@ Contract tests cover model discovery, public capabilities, resolver/readiness,
 generic job normalization, process isolation, memory policy, storage, the
 capability-driven UI contract, provenance caching/ambiguity, exact-SHA provider
 validation, execution-profile ambiguity, recipe adapters, asset-provider
-iteration, and the current ConvRot two-stage AV primitives.
+iteration, the ConvRot quality asset policy, I2V stability modes, LTX LoRA
+contracts, and the current ConvRot two-stage AV primitives.
 
-Real-model GPU validation is still intentionally separate. Backend registration,
-asset readiness, or passing unit/contract tests must not be described as a
-successful hardware smoke test.
+Local hardware-smoke reports exist under `smoke_reports/` and include real
+ConvRot canary generations on an RTX 5070 Ti, but they predate the native
+two-stage I2V topology, memory-safe attention, and quality-asset changes from
+August 2026. Backend registration, asset readiness, or passing unit/contract
+tests must not be described as a successful hardware smoke test of the current
+topology.

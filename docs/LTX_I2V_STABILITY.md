@@ -10,9 +10,25 @@ The browser never selects a backend or model family. A model profile advertises 
 
 ## Reference conditioning
 
-The LTX-2.5 ConvRot I2V worker uses Comfy core's `LTXVAddGuide` rather than the older `LTXVImgToVideoInplace` path.
+The current native LTX-2.5 two-stage topology conditions each stage on the
+source image with latent first-frame/noise-mask conditioning from Comfy core's
+`LTXVImgToVideoInplace`. Stage one applies it before the first AV sampling pass;
+after the learned 2x spatial upsampler, a second Inplace pass re-conditions the
+refinement stage. Guide strengths come from the normalized companion recipe
+(`image_guide_strength`, `upscaled_image_guide_strength`).
 
-`LTXVAddGuide` does more than replace frame-zero latent pixels. It appends reference/keyframe tokens and records their temporal positions in positive and negative conditioning, allowing the sampler's attention path to retain the reference throughout the generated sequence. `LTXVCropGuides` removes those temporary guide tokens before latent upscaling/final decode, and the references are rebuilt at the high-resolution stage.
+DuckMotion sets `bypass=False` for the Inplace nodes so the author's intended
+first-frame/noise-mask conditioning stays active rather than being bypassed by a
+shared workflow template.
+
+`LTXVAddGuide` is reserved for the explicit `locked` stability mode. It goes
+beyond replacing frame-zero latent pixels: it appends reference/keyframe tokens
+and records their temporal positions in positive and negative conditioning,
+allowing the sampler's attention path to retain the reference throughout the
+generated sequence. `LTXVCropGuides` removes those temporary guide tokens before
+latent upscaling/final decode, and the references are rebuilt at the
+high-resolution stage. AddGuide is not a drop-in replacement for normal I2V
+conditioning.
 
 DuckMotion invokes these known Comfy nodes directly. It does not execute arbitrary companion workflow JSON.
 
@@ -20,13 +36,14 @@ DuckMotion invokes these known Comfy nodes directly. It does not execute arbitra
 
 ### Model default
 
-Preserves the normalized companion recipe's source-image guide strengths and stage-two noise policy. It still uses the current `LTXVAddGuide` reference-conditioning primitive.
+Preserves the normalized companion recipe's Inplace guide strengths and stage-two noise policy.
 
 Use this for general-purpose I2V and action-heavy shots.
 
 ### Identity stable
 
-Keeps only a first-frame reference, but applies a quality-oriented stability override:
+Keeps the same native Inplace topology, but applies a quality-oriented stability
+override:
 
 - first-stage source reference: `1.0`
 - high-resolution source reference: `1.0`
@@ -39,7 +56,8 @@ This is intended for clips where subject/face identity matters more than maximiz
 Includes all `Identity stable` behavior and uses the same source image as both:
 
 - frame `0` reference; and
-- final-frame (`-1`) reference.
+- final-frame (`-1`) reference,
+- appended through `LTXVAddGuide` instead of the normal Inplace passes.
 
 This is intended for tripod shots, portraits, interviews, product shots, and other low-motion compositions where the first-frame appearance should remain recognizable over a long generation.
 
@@ -60,6 +78,8 @@ stage2_guide_plan
 stage2_seed
 ```
 
+`reference_conditioning` records which primitive actually ran
+(`LTXVImgToVideoInplace` for `model`/`identity`, `LTXVAddGuide` for `locked`).
 This keeps visual A/B tests reproducible and makes quality overrides explicit rather than silently rewriting checkpoint-author tuning.
 
 ## Deliberately separate concerns

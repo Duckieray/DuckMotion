@@ -17,6 +17,10 @@ Current runnable workflows include:
 
 ## Quick Start
 
+> **Not a developer?** Follow the step-by-step beginner guide with ZIP download,
+> unzip, and copy-and-paste instructions for Windows and Linux:
+> [`docs/SETUP_STEP_BY_STEP.md`](docs/SETUP_STEP_BY_STEP.md).
+
 The normal installation path is intentionally one command plus your shared model
 folder:
 
@@ -201,6 +205,10 @@ Final dimensions are normalized to multiples of 64 and frame counts to `8k+1`.
 The sampling schedule is checkpoint/runtime-owned rather than a generic
 arbitrary-step UI mode.
 
+Both LTX adapters also support model-family LoRA adapters. DuckMotion reuses
+WebbDuck's LoRA library root; LTX LoRAs live in its `ltx/` namespace and are
+selected from the UI by logical name and blend weight, never by filesystem path.
+
 ## LTX-2.5 INT8 ConvRot
 
 ConvRot has a separate isolated runtime because activation rotation needs a
@@ -232,6 +240,13 @@ The installed two-stage AV profile also owns trusted standard sources for its
 LTX text encoder, VAE, and spatial-upscaler roles. Those defaults only fill a
 missing source for the same standard asset name; a differently named custom
 recipe asset is never silently substituted.
+
+When the selected checkpoint supports image-to-video, an optional reference
+stability mode is exposed through the selected model's constraints
+(`model` / `identity` / `locked`). The default preserves the companion recipe's
+first-frame conditioning, `identity` strengthens it for recognizable subjects,
+and `locked` additionally anchors the final frame for static/tripod-style shots.
+Mode support is a profile constraint, never a model-brand rule.
 
 See `docs/LTX25_CONVROT.md` and `docs/EXECUTION_RECIPES.md` for the profile,
 provenance, and manifest contracts.
@@ -312,7 +327,8 @@ The default is preflight only. Actual generation requires explicit `--execute`;
 heavy/reference rows additionally require `--include-heavy`.
 
 The smoke harness selects ConvRot targets from runtime format metadata rather
-than model names. See `docs/HARDWARE_SMOKE_MATRIX.md` for the current matrix.
+than model names and writes per-run JSON reports under `smoke_reports/`. See
+`docs/HARDWARE_SMOKE_MATRIX.md` for the current matrix.
 
 ## Plugin Packaging
 

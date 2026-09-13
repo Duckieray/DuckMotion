@@ -121,8 +121,9 @@ Recipe resolution may use:
    profile.
 
 Adapters must never execute arbitrary companion code/graphs. If zero profiles
-match, the model is blocked with a diagnostic. If multiple profiles/recipe
-candidates match, DuckMotion refuses to guess.
+match, the model is blocked with a diagnostic. If multiple profiles match,
+DuckMotion refuses to guess. If multiple recipe candidates match, DuckMotion
+also refuses to guess.
 
 For LTX-2.5 ConvRot, graph topology identifies the installed two-stage AV
 profile. Checkpoint-author sampling details such as Euler vs Euler ancestral and
@@ -162,7 +163,11 @@ stage2_fixed_seed (only with fixed policy)
 ```
 
 Anything missing, malformed, unsupported, or ambiguous falls back to the audited
-profile default instead of being executed dynamically.
+profile default instead of being executed dynamically. For the current
+`ltx25_convrot_two_stage_av` profile those normalized fallbacks are the
+`euler_ancestral` sampler for both stages, the published stage-1/stage-2 sigma
+schedules, video/audio CFG of 1.0, and a stage-two noise policy of `fixed` at
+seed `42`. A user-supplied Guidance value maps to both video and audio CFG.
 
 The current native two-stage I2V topology uses source-frame
 `LTXVImgToVideoInplace` conditioning, LTX AV Dual CFG, a learned 2x latent
